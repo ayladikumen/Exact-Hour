@@ -7,7 +7,10 @@ The core principle is simple:
 
 > When time becomes tangible, behavior changes.
 
+<img width="1536" height="1024" alt="ChatGPT Image 23 Şub 2026 23_04_33" src="https://github.com/user-attachments/assets/1abe8ad1-df36-4576-9ab5-1aebc3aca9d7" />
+
 ---
+
 
 ## Concept
 
