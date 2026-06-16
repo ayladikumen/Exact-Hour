@@ -1,0 +1,398 @@
+================================================================================
+DOTNOTE - PROJECT REFERENCE FILE
+LED Matrix Message Display
+Last updated: 2026-03-14
+================================================================================
+
+PROJECT OVERVIEW
+----------------
+DotNote is a web-based interface to display scrolling messages on MAX7219 LED
+matrix displays. Two versions exist:
+  1. Raspberry Pi version  - Python / Flask / luma.led_matrix
+  2. ESP8266 version       - Arduino C++ / MD_Parola / ESP8266WebServer
+
+
+================================================================================
+VERSION 1: RASPBERRY PI (Python)
+================================================================================
+
+DEPENDENCIES
+------------
+  pip install flask luma.led_matrix gpiozero
+
+FILE: app.py
+------------
+
+#!/usr/bin/env python3
+import time
+import threading
+from flask import Flask, request, jsonify, render_template
+from luma.led_matrix.device import max7219
+from luma.core.interface.serial import spi, noop
+from luma.core.legacy import show_message
+from luma.core.legacy.font import CP437_FONT, proportional
+from gpiozero import Buzzer
+
+# ---- CONFIGURATION ----
+CASCADED_DEVICES  = 4           # Number of chained 8x8 matrices
+BLOCK_ORIENTATION = -90         # -90 | 0 | 90 | 180
+ROTATE            = 0           # 0 | 1 | 2 | 3
+BRIGHTNESS        = 5           # 0-15
+SCROLL_SPEED      = 0.05        # seconds per step (lower = faster)
+DEFAULT_MESSAGE   = "Welcome to DotNote!   "
+MESSAGE_SPACING   = "   "
+BUZZER_ENABLED    = True
+BUZZER_PIN        = 23
+BEEP_DURATION     = 0.2         # seconds
+BEEP_COUNT        = 2
+SERVER_HOST       = '0.0.0.0'
+SERVER_PORT       = 5000
+LOG_FILE          = "messages.log"
+LOG_ENABLED       = True
+
+# ---- INIT ----
+app     = Flask(__name__)
+serial  = spi(port=0, device=0, gpio=noop())
+device  = max7219(serial, cascaded=CASCADED_DEVICES,
+                  block_orientation=BLOCK_ORIENTATION, rotate=ROTATE)
+device.contrast(BRIGHTNESS)
+buzzer  = Buzzer(BUZZER_PIN) if BUZZER_ENABLED else None
+current_message = DEFAULT_MESSAGE
+message_lock    = threading.Lock()
+
+# ---- DISPLAY LOOP (runs in background thread) ----
+def display_loop():
+    global current_message
+    while True:
+        with message_lock:
+            msg = current_message
+        try:
+            show_message(device, msg, fill="white",
+                         font=proportional(CP437_FONT), scroll_delay=SCROLL_SPEED)
+        except Exception as e:
+            print(f"Error displaying message: {e}")
+            with message_lock:
+                current_message = "Error: Unsupported character   "
+        time.sleep(0.1)
+
+# ---- BUZZER ----
+def beep():
+    if BUZZER_ENABLED and buzzer:
+        buzzer.beep(on_time=BEEP_DURATION, off_time=BEEP_DURATION,
+                    n=BEEP_COUNT, background=False)
+
+# ---- LOGGING ----
+def log_message(message, ip):
+    if not LOG_ENABLED:
+        return
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{timestamp} - {ip} - {message.strip()}\n")
+    except Exception as e:
+        print(f"Error writing to log: {e}")
+
+# ---- ROUTES ----
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/update', methods=['GET'])
+def update_message():
+    global current_message
+    new_message = request.args.get('message')
+    if not new_message or new_message.strip() == "":
+        return jsonify({'error': 'No valid message provided'}), 400
+    new_message = new_message + MESSAGE_SPACING
+    with message_lock:
+        current_message = new_message
+    log_message(new_message, request.remote_addr)
+    if BUZZER_ENABLED:
+        threading.Thread(target=beep, daemon=True).start()
+    return jsonify({'message': 'Message updated'}), 200
+
+# ---- MAIN ----
+if __name__ == '__main__':
+    t = threading.Thread(target=display_loop, daemon=True)
+    t.start()
+    app.run(host=SERVER_HOST, port=SERVER_PORT)
+
+
+WIRING (Pi)
+-----------
+  MAX7219 VCC  -> 3.3V / 5V
+  MAX7219 GND  -> GND
+  MAX7219 DIN  -> MOSI (GPIO10, Pin 19)
+  MAX7219 CLK  -> SCLK (GPIO11, Pin 23)
+  MAX7219 CS   -> CE0  (GPIO8,  Pin 24)
+  Buzzer +     -> GPIO23 (Pin 16) via 100Ω resistor
+  Buzzer -     -> GND
+
+
+================================================================================
+VERSION 2: ESP8266 (Arduino C++)
+================================================================================
+
+REQUIRED LIBRARIES (install via Arduino Library Manager)
+---------------------------------------------------------
+  - MD_Parola        by majicDesigns
+  - MD_MAX72XX       by majicDesigns
+  - ESP8266WiFi      (bundled with ESP8266 board package)
+  - ESP8266WebServer (bundled with ESP8266 board package)
+  - SPI              (bundled with Arduino IDE)
+
+BOARD SETUP (Arduino IDE)
+--------------------------
+  Board:       NodeMCU 1.0 (ESP-12E Module)  OR  Generic ESP8266
+  Flash Size:  4MB
+  CPU Freq:    80MHz
+
+WIRING (ESP8266)
+----------------
+  MAX7219 VCC  -> 3.3V or 5V (check your module)
+  MAX7219 GND  -> GND
+  MAX7219 DIN  -> D7 (GPIO13, MOSI)
+  MAX7219 CLK  -> D5 (GPIO14, SCK)
+  MAX7219 CS   -> D8 (GPIO15)
+  Buzzer +     -> D1 (GPIO5) via 100Ω resistor
+  Buzzer -     -> GND
+
+FILE: dotnote_esp8266.ino
+--------------------------
+
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <MD_Parola.h>
+#include <MD_MAX72xx.h>
+#include <SPI.h>
+
+// ---- CONFIGURATION ----
+const char* WIFI_SSID     = "your_ssid";       // <-- CHANGE THIS
+const char* WIFI_PASSWORD = "your_password";   // <-- CHANGE THIS
+
+#define HARDWARE_TYPE MD_MAX72XX::FC16_HW  // Try GENERIC_HW or PAROLA_HW if display looks wrong
+#define NUM_DEVICES   4
+#define CS_PIN        15   // D8
+
+const uint16_t SCROLL_SPEED = 50;              // ms per step (lower = faster)
+const uint8_t  BRIGHTNESS   = 5;              // 0-15
+const char*    DEFAULT_MSG  = "Welcome to DotNote!   ";
+const char*    MSG_SPACING  = "   ";
+
+const bool    BUZZER_ENABLED = true;
+const uint8_t BUZZER_PIN     = 5;   // D1
+const int     BEEP_DURATION  = 200; // ms
+const int     BEEP_COUNT     = 2;
+
+const uint16_t SERVER_PORT = 80;
+
+// ---- GLOBALS ----
+MD_Parola        display = MD_Parola(HARDWARE_TYPE, CS_PIN, NUM_DEVICES);
+ESP8266WebServer server(SERVER_PORT);
+String           currentMessage = DEFAULT_MSG;
+bool             messageUpdated = false;
+
+// ---- BUZZER ----
+void beep() {
+    if (!BUZZER_ENABLED) return;
+    for (int i = 0; i < BEEP_COUNT; i++) {
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(BEEP_DURATION);
+        digitalWrite(BUZZER_PIN, LOW);
+        if (i < BEEP_COUNT - 1) delay(BEEP_DURATION);
+    }
+}
+
+// ---- WEB HANDLERS ----
+void handleRoot() {
+    String html = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DotNote</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: sans-serif; background: #111; color: #eee;
+           display: flex; flex-direction: column; align-items: center;
+           justify-content: center; min-height: 100vh; }
+    h1 { font-size: 2rem; margin-bottom: 1.5rem; color: #ff6b00; }
+    form { display: flex; flex-direction: column; gap: 0.75rem;
+           width: 90%; max-width: 480px; }
+    input[type=text] { padding: 0.75rem; border-radius: 8px; border: none;
+                       font-size: 1rem; background: #222; color: #eee; }
+    button { padding: 0.75rem; border-radius: 8px; border: none;
+             background: #ff6b00; color: #fff; font-size: 1rem; cursor: pointer; }
+    button:hover { background: #e05a00; }
+    #status { margin-top: 1rem; color: #aaa; }
+  </style>
+</head>
+<body>
+  <h1>&#9632; DotNote</h1>
+  <form id="msgForm">
+    <input type="text" id="msgInput" placeholder="Type your message..."
+           maxlength="200" autofocus>
+    <button type="submit">Send to Display</button>
+  </form>
+  <p id="status"></p>
+  <script>
+    document.getElementById('msgForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      const msg = document.getElementById('msgInput').value.trim();
+      const status = document.getElementById('status');
+      if (!msg) { status.textContent = 'Please enter a message.'; return; }
+      status.textContent = 'Sending...';
+      try {
+        const res = await fetch('/update?message=' + encodeURIComponent(msg));
+        const data = await res.json();
+        status.textContent = res.ok ? '✓ ' + data.message : '✗ ' + data.error;
+      } catch (err) {
+        status.textContent = '✗ Connection error.';
+      }
+    });
+  </script>
+</body>
+</html>
+)rawliteral";
+    server.send(200, "text/html", html);
+}
+
+void handleUpdate() {
+    if (!server.hasArg("message") || server.arg("message").isEmpty()) {
+        server.send(400, "application/json", "{\"error\":\"No valid message provided\"}");
+        return;
+    }
+    String msg = server.arg("message");
+    msg.trim();
+    msg += MSG_SPACING;
+    currentMessage = msg;
+    messageUpdated = true;
+    Serial.printf("[%lu] %s -> %s\n",
+                  millis(),
+                  server.client().remoteIP().toString().c_str(),
+                  msg.c_str());
+    beep();
+    server.send(200, "application/json", "{\"message\":\"Message updated\"}");
+}
+
+void handleNotFound() {
+    server.send(404, "application/json", "{\"error\":\"Not found\"}");
+}
+
+// ---- SETUP ----
+void setup() {
+    Serial.begin(115200);
+    if (BUZZER_ENABLED) {
+        pinMode(BUZZER_PIN, OUTPUT);
+        digitalWrite(BUZZER_PIN, LOW);
+    }
+    display.begin();
+    display.setIntensity(BRIGHTNESS);
+    display.setTextAlignment(PA_LEFT);
+    display.displayText(currentMessage.c_str(), PA_LEFT, SCROLL_SPEED,
+                        0, PA_SCROLL_LEFT, PA_SCROLL_LEFT);
+    Serial.printf("Connecting to %s", WIFI_SSID);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.printf("\nConnected! IP: %s\n", WiFi.localIP().toString().c_str());
+    beep();
+    server.on("/",        HTTP_GET, handleRoot);
+    server.on("/update",  HTTP_GET, handleUpdate);
+    server.onNotFound(handleNotFound);
+    server.begin();
+    Serial.printf("Web server running on port %d\n", SERVER_PORT);
+}
+
+// ---- LOOP ----
+void loop() {
+    server.handleClient();  // Handle HTTP requests
+
+    // displayAnimate() returns true when scroll cycle completes
+    if (display.displayAnimate()) {
+        if (messageUpdated) {
+            display.displayText(currentMessage.c_str(), PA_LEFT, SCROLL_SPEED,
+                                0, PA_SCROLL_LEFT, PA_SCROLL_LEFT);
+            messageUpdated = false;
+        } else {
+            display.displayReset();  // Loop same message
+        }
+    }
+}
+
+
+================================================================================
+API REFERENCE
+================================================================================
+
+ENDPOINT: GET /
+  Returns the HTML control page.
+
+ENDPOINT: GET /update?message=<text>
+  Updates the scrolling message on the display.
+  Parameters:
+    message (string, required) - URL-encoded message text. Max 200 chars.
+  Responses:
+    200 OK     { "message": "Message updated" }
+    400 Bad    { "error": "No valid message provided" }
+    404        { "error": "Not found" }
+  Side effects:
+    - Updates display immediately (on next scroll cycle for ESP8266)
+    - Triggers buzzer beep pattern
+    - Pi version: logs entry to messages.log
+    - ESP8266 version: logs to Serial monitor
+
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+DISPLAY shows garbage / mirrored / upside-down characters:
+  Pi:      Change BLOCK_ORIENTATION (-90, 0, 90, 180) and/or ROTATE (0-3)
+  ESP8266: Change HARDWARE_TYPE:
+             MD_MAX72XX::FC16_HW      (most common blue modules)
+             MD_MAX72XX::GENERIC_HW
+             MD_MAX72XX::PAROLA_HW
+
+DISPLAY is too dim / too bright:
+  Adjust BRIGHTNESS (0-15). Start at 5, raise if needed.
+
+SCROLL is too fast / too slow:
+  Pi:      Increase SCROLL_SPEED (e.g. 0.05 -> 0.08) to slow down.
+  ESP8266: Increase SCROLL_SPEED (e.g. 50 -> 80 ms) to slow down.
+
+BUZZER makes no sound:
+  - Check BUZZER_ENABLED = true
+  - Verify wiring and GPIO pin number
+  - Active buzzers work directly; passive buzzers need a PWM signal instead
+
+ESP8266 won't connect to WiFi:
+  - Double-check WIFI_SSID and WIFI_PASSWORD (case-sensitive)
+  - Ensure 2.4GHz network (ESP8266 does not support 5GHz)
+  - Hold FLASH button on board and re-upload if stuck in boot loop
+
+Pi SPI not working:
+  - Enable SPI: sudo raspi-config -> Interface Options -> SPI -> Enable
+  - Verify luma is installed: pip show luma.led_matrix
+
+
+================================================================================
+POSSIBLE NEXT FEATURES
+================================================================================
+
+  [ ] Password-protect the /update endpoint
+  [ ] Message queue (multiple messages cycle automatically)
+  [ ] Brightness control from the web UI
+  [ ] OTA (over-the-air) firmware updates for ESP8266
+  [ ] MQTT support for smart home integration
+  [ ] Store message history on ESP8266 LittleFS filesystem
+  [ ] Custom fonts or icon support
+  [ ] Multiple display zones (split matrix into sections)
+
+
+================================================================================
+END OF FILE
+================================================================================
