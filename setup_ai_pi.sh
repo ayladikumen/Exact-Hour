@@ -72,7 +72,9 @@ fi
 # -----------------------------------------------------------------------------
 echo ">>> 2/4  Installing build tools..."
 sudo apt-get update
-sudo apt-get install -y build-essential cmake python3-pip python3-dev python3-venv
+# swig is needed to build the lgpio wheel from source on Python versions that
+# have no prebuilt wheel (e.g. Python 3.13 on Bookworm).
+sudo apt-get install -y build-essential cmake swig python3-pip python3-dev python3-venv
 
 # Build/unpack temp goes to a real disk dir, NOT /tmp (which is a small RAM tmpfs
 # on the Pi and overflows with "No space left on device"). Single-threaded build
@@ -163,6 +165,13 @@ echo "        sudo systemctl stop exacthour.service"
 #               uses the SYSTEM python, which has them; your venv may not).
 #       Fix:    This script now installs them. Manually, with the venv active:
 #                   pip install luma.led_matrix gpiozero lgpio
+#
+#  9) "Building wheel for lgpio ... swig: No such file or directory"
+#       Cause:  lgpio has no prebuilt wheel for your Python, so pip builds it from
+#               source, which needs swig.
+#       Fix:    This script now installs swig. Manually:
+#                   sudo apt install -y swig
+#                   pip install lgpio
 #
 #  8) "Could not start LED display" with a SPI / device-busy error
 #       Cause:  Another program is using the matrix (main.py or the service).
