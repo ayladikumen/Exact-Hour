@@ -31,6 +31,7 @@
 import sys
 import re
 import time
+import threading
 
 
 # =============================================================================
@@ -40,6 +41,13 @@ import time
 # --- Session limits (mirrors the beta timer in main.py) ----------------------
 DEFAULT_MINUTES = 20          # what "start" with no number assumes
 MAX_MINUTES     = 270         # 4 h 30 m ceiling, same as the beta
+
+# --- LED display (only used with --display, on the Pi) -----------------------
+# Same values as main.py so the matrix looks identical.
+LED_CASCADED   = 4            # four 8x8 blocks = 32x8 pixels
+LED_ORIENTATION = -90         # -90 suits the common FC16 blue modules
+LED_ROTATE     = 0
+LED_INTENSITY  = 5            # 0-15 brightness
 
 # --- Local LLM fallback (SmolLM2-135M, quantized GGUF) ------------------------
 # The model lives in ./models so it is committed alongside the code in one repo.
@@ -352,6 +360,78 @@ HELP_TEXT = (
 
 
 # =============================================================================
+#  LedDisplay - drive the real MAX7219 matrix (only used with --display)
+# -----------------------------------------------------------------------------
+#  Reuses the bitmap font + centred rendering from main.py, so the display looks
+#  identical to the hardware timer. Imports luma lazily so the assistant still
+#  runs on a PC (no luma installed) when --display is NOT used.
+# =============================================================================
+class LedDisplay:
+    def __init__(self):
+        from luma.led_matrix.device import max7219
+        from luma.core.interface.serial import spi, noop
+        from luma.core.render import canvas
+        from main import GLYPHS, GLYPH_HEIGHT      # <-- reuse main.py's font
+
+        serial = spi(port=0, device=0, gpio=noop())
+        self.device = max7219(serial, cascaded=LED_CASCADED,
+                              block_orientation=LED_ORIENTATION, rotate=LED_ROTATE)
+        self.device.contrast(LED_INTENSITY * 16)
+        self._canvas = canvas
+        self._glyphs = GLYPHS
+        self._gh = GLYPH_HEIGHT
+
+    def show(self, message, gap=1):
+        width = sum(len(self._glyphs[ch][0]) for ch in message) + gap * (len(message) - 1)
+        x0 = max(0, (self.device.width - width) // 2)
+        y0 = (self.device.height - self._gh) // 2
+        with self._canvas(self.device) as draw:
+            x = x0
+            for ch in message:
+                rows = self._glyphs[ch]
+                for ri, row in enumerate(rows):
+                    for ci, px in enumerate(row):
+                        if px == "#":
+                            draw.point((x + ci, y0 + ri), fill="white")
+                x += len(rows[0]) + gap
+
+    def clear(self):
+        self.device.clear()
+
+
+def _clock_str(total_seconds):
+    """Seconds -> 'H:MM:SS' or 'MM:SS' (only chars our LED font has)."""
+    total = int(total_seconds)
+    m, s = divmod(total, 60)
+    if m >= 60:
+        h, mm = divmod(m, 60)
+        return f"{h}:{mm:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+def display_text(session):
+    """What the LED should currently show for this session."""
+    if session.is_finished():
+        return "BITTI"
+    secs = session.remaining() if session.target_sec else session.elapsed()
+    return _clock_str(secs)
+
+
+def display_loop(session, led, stop_event):
+    """Background thread: redraw the LED whenever the shown time changes."""
+    last = None
+    while not stop_event.is_set():
+        txt = display_text(session)
+        if txt != last:          # only push to SPI when the digits actually change
+            try:
+                led.show(txt)
+                last = txt
+            except Exception:    # noqa: BLE001 - never let a display glitch kill the thread
+                pass
+        time.sleep(0.2)
+
+
+# =============================================================================
 #  REPL + self-test
 # =============================================================================
 def _maybe_announce_end(session):
@@ -361,7 +441,7 @@ def _maybe_announce_end(session):
         print(f"  *** Goal reached - you've worked {_fmt(session.target_sec)}! (BITTI) ***")
 
 
-def run_repl(use_llm):
+def run_repl(use_llm, use_display=False):
     session = Session()
     llm = None
     if use_llm:
@@ -373,21 +453,42 @@ def run_repl(use_llm):
             print(f"Local AI unavailable ({llm.reason}); using rule-based parsing only.\n")
             llm = None
 
-    print("Exact Hour - text assistant. Type a command, or 'help'. ('exit' to quit.)\n")
-    while True:
-        _maybe_announce_end(session)
+    # Optional: drive the real LED matrix in a background thread.
+    led, stop_event = None, None
+    if use_display:
         try:
-            text = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nBye.")
-            return
-        if not text:
-            continue
-        reply = dispatch(parse(text, llm), session)
-        if reply == "__QUIT__":
-            print("Bye.")
-            return
-        print(reply)
+            led = LedDisplay()
+            stop_event = threading.Event()
+            threading.Thread(target=display_loop, args=(session, led, stop_event),
+                             daemon=True).start()
+            led.show("00:00")
+            print("LED display active - the matrix now shows the timer live.\n")
+        except Exception as e:                       # noqa: BLE001
+            print(f"Could not start LED display ({e}); continuing text-only.\n")
+            led = None
+
+    print("Exact Hour - text assistant. Type a command, or 'help'. ('exit' to quit.)\n")
+    try:
+        while True:
+            _maybe_announce_end(session)
+            try:
+                text = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nBye.")
+                return
+            if not text:
+                continue
+            reply = dispatch(parse(text, llm), session)
+            if reply == "__QUIT__":
+                print("Bye.")
+                return
+            print(reply)
+    finally:
+        if stop_event:
+            stop_event.set()
+        if led:
+            time.sleep(0.25)     # let the display thread stop before we clear
+            led.clear()
 
 
 # A fixed transcript so you can confirm the pipeline works without typing.
@@ -421,7 +522,8 @@ def main():
     if "--selftest" in args:
         run_selftest()
     else:
-        run_repl(use_llm=("--llm" in args))
+        run_repl(use_llm=("--llm" in args),
+                 use_display=("--display" in args or "--led" in args))
 
 
 if __name__ == "__main__":

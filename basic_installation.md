@@ -432,6 +432,23 @@ AI runs **fully on the Pi — no internet, no cloud**.
    You'll see *"Local AI ready"* if it worked. Type commands the same as before —
    now it can handle phrasings the simple rules would miss.
 
+### Show the timer on the real LED matrix
+
+By default the assistant only **prints** replies in the terminal. To make your
+typed commands actually drive the **MAX7219 LED display** (the same one `main.py`
+uses), add `--display`:
+
+```bash
+python assistant.py --display          # rules only, on the LED
+python assistant.py --llm --display     # local AI + the LED
+```
+
+Now `make 20 min` shows `20:00` counting down on the matrix, `pause` freezes it,
+`stop` clears it, and reaching the goal shows `BITTI` — all live while you type.
+
+> The display needs the matrix wired up (Section 7) and runs on the Pi. Make sure
+> `main.py` isn't running at the same time — only one program can use the display.
+
 > The AI model file (`models/SmolLM2-135M-Instruct-Q4_0.gguf`, ~92 MB) already
 > comes with the project, so there is nothing to download.
 
