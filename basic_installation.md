@@ -22,6 +22,7 @@ This guide assumes no prior Raspberry Pi experience. Follow it top to bottom.
 10. [Start Automatically on Boot (Optional)](#10-start-automatically-on-boot-optional)
 11. [Controls Reference](#11-controls-reference)
 12. [Troubleshooting](#12-troubleshooting)
+13. [Text AI Assistant (Optional)](#13-text-ai-assistant-optional)
 
 ---
 
@@ -338,3 +339,96 @@ pip install lgpio
 - Double-check `VCC`, `GND`, `DIN`, `CS`, and `CLK` wiring against
   [Section 7](#7-wire-the-hardware).
 - Verify `CASCADED_DEVICES = 4` matches your number of 8×8 blocks.
+
+---
+
+## 13. Text AI Assistant (Optional)
+
+`assistant.py` lets you **type** commands in plain English instead of pressing
+buttons — "make 20 min", "how long have I worked", "add 15 minutes", "stop".
+It's the text-first version of the planned voice feature.
+
+There are **two levels**. Start with Level 1 — it needs no setup at all.
+
+### Level 1 — Just type commands (no install, works anywhere)
+
+This works on the **Pi or your own PC**, with nothing extra to install.
+
+1. Make sure you have the code (the same `assistant.py` and `models/` folder that
+   came with the project — see [Section 8](#8-get-the-code)).
+2. Run it:
+
+   ```bash
+   python assistant.py
+   ```
+
+   > On Windows, type `py assistant.py` instead of `python assistant.py`.
+
+3. Type commands and press Enter. Try these:
+
+   ```
+   make 20 min
+   how long have i worked
+   add 15 minutes
+   pause
+   resume
+   stop
+   help
+   exit
+   ```
+
+That's it — if you see replies like *"Session started…"*, it works. 🎉
+
+**Want a quick demo without typing?** Run:
+
+```bash
+python assistant.py --selftest
+```
+
+It runs a list of example commands by itself and shows the answers.
+
+### Level 2 — Turn on the local AI brain (Pi only)
+
+Level 1 understands the common commands with simple rules. Level 2 adds a **tiny
+offline AI model** (SmolLM2) so it also understands more unusual phrasings. The
+AI runs **fully on the Pi — no internet, no cloud**.
+
+> ⚠️ Do this **on the Raspberry Pi**, not your PC. It needs the Pi to compile.
+
+1. Activate your virtual environment (the one from
+   [Section 6](#6-install-the-python-libraries)):
+
+   ```bash
+   cd ~/exacthour
+   source venv/bin/activate
+   ```
+
+2. Run the one-time setup script (adds extra memory + installs the AI library —
+   this can take **10–20 minutes** on a Pi Zero, so be patient):
+
+   ```bash
+   bash setup_ai_pi.sh
+   ```
+
+3. Now run the assistant **with the AI turned on**:
+
+   ```bash
+   python assistant.py --llm
+   ```
+
+   You'll see *"Local AI ready"* if it worked. Type commands the same as before —
+   now it can handle phrasings the simple rules would miss.
+
+> The AI model file (`models/SmolLM2-135M-Instruct-Q4_0.gguf`, ~92 MB) already
+> comes with the project, so there is nothing to download.
+
+### Troubleshooting the assistant
+
+**`python: command not found`** → try `python3 assistant.py` (Pi) or `py assistant.py` (Windows).
+
+**"Local AI unavailable…"** when using `--llm` → that's okay, it just falls back to
+the simple rules and still works. To enable the AI, finish Level 2 above
+(`bash setup_ai_pi.sh`).
+
+**It feels slow with `--llm`** → the AI only runs when the simple rules are unsure,
+and the Pi Zero is a small computer. For fastest use, run without `--llm`.
