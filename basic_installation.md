@@ -247,43 +247,56 @@ start your countdown. Press **Ctrl + C** to quit — the display clears on exit.
 
 To make Exact Hour launch every time the Pi powers on, create a **systemd service**.
 
-1. Create the service file:
+> ⚠️ **Use YOUR own username and folder name**, not `pi`/`exacthour`. If you log in
+> as `doruk` and your project is in `~/Exact-Hour`, then your home path is
+> `/home/doruk/Exact-Hour`. Getting this wrong is the #1 cause of a
+> `status=203/EXEC` failure (systemd can't find the program). Run `whoami` to see
+> your username and `pwd` (inside the project folder) to see the full path.
+
+1. **Create the service file automatically.** This block fills in your real
+   username, folder, and Python for you — just paste and run it
+   (it assumes your project folder is `~/Exact-Hour`; change it if yours differs):
 
    ```bash
-   sudo nano /etc/systemd/system/exacthour.service
-   ```
+   PROJ="$HOME/Exact-Hour"
+   PYBIN="$PROJ/venv/bin/python"
+   [ -x "$PYBIN" ] || PYBIN="$(which python3)"   # fall back to system Python if no venv
+   echo "User: $(whoami) | Folder: $PROJ | Python: $PYBIN"
 
-2. Paste this (adjust the username if it isn't `pi`):
-
-   ```ini
+   sudo tee /etc/systemd/system/exacthour.service >/dev/null <<EOF
    [Unit]
    Description=Exact Hour Countdown Timer
    After=multi-user.target
 
    [Service]
    Type=simple
-   User=pi
-   WorkingDirectory=/home/pi/exacthour
-   ExecStart=/home/pi/exacthour/venv/bin/python /home/pi/exacthour/main.py
+   User=$(whoami)
+   WorkingDirectory=$PROJ
+   ExecStart=$PYBIN $PROJ/main.py
    Restart=on-failure
 
    [Install]
    WantedBy=multi-user.target
+   EOF
    ```
 
-3. Enable and start it:
+2. Enable and start it:
 
    ```bash
    sudo systemctl daemon-reload
    sudo systemctl enable --now exacthour.service
    ```
 
-4. Check its status or logs anytime:
+3. Check its status or logs anytime:
 
    ```bash
    systemctl status exacthour.service
    journalctl -u exacthour.service -f
    ```
+
+> **If you see `status=203/EXEC`:** the `ExecStart`/`WorkingDirectory` path is
+> wrong. Re-run the block in step 1 (it auto-detects the correct paths), then
+> `sudo systemctl daemon-reload && sudo systemctl restart exacthour.service`.
 
 ---
 
