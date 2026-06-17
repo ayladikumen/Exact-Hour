@@ -14,8 +14,12 @@
 #  environment". This script calls sudo ONLY for the apt/swap steps that need it.
 #
 #  It is safe to re-run. The model file ships with the repo
-#  (models/SmolLM2-135M-Instruct-Q4_0.gguf), so this only sets up swap and the
-#  llama.cpp Python bindings.
+#  (models/SmolLM2-135M-Instruct-Q4_0.gguf). This script sets up everything an
+#  end user needs:
+#    - 1 GB swap (memory safety on the 512 MB Pi)
+#    - LED display + button libraries (luma.led_matrix, gpiozero, lgpio)
+#    - the local AI engine (llama-cpp-python)
+#  After it finishes:  python assistant.py --llm --display
 #
 #  >>> Troubleshooting is at the BOTTOM of this file. <<<
 # =============================================================================
@@ -66,27 +70,35 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-echo ">>> 2/3  Installing build tools + llama-cpp-python (compiles for ARM - be patient)..."
+echo ">>> 2/4  Installing build tools..."
 sudo apt-get update
 sudo apt-get install -y build-essential cmake python3-pip python3-dev python3-venv
 
-# Build temp goes to a real disk dir, NOT /tmp (which is a small RAM tmpfs on the
-# Pi and overflows with "No space left on device" while unpacking/compiling).
-# Single-threaded build keeps RAM pressure low on the Pi Zero.
+# Build/unpack temp goes to a real disk dir, NOT /tmp (which is a small RAM tmpfs
+# on the Pi and overflows with "No space left on device"). Single-threaded build
+# keeps RAM pressure low on the Pi Zero.
 mkdir -p "$HOME/tmp"
 export TMPDIR="$HOME/tmp"
 export CMAKE_BUILD_PARALLEL_LEVEL=1
-
-# Install into the active venv. If pip refuses (e.g. no venv, externally-managed),
-# retry with --break-system-packages so the install still succeeds.
 pip install --upgrade pip || true
-if ! pip install --no-cache-dir llama-cpp-python; then
-  echo "    Plain pip install failed - retrying with --break-system-packages..."
-  pip install --no-cache-dir --break-system-packages llama-cpp-python
-fi
+
+# Helper: pip install into the active venv, retrying with --break-system-packages.
+pip_get() {
+  if ! pip install --no-cache-dir "$@"; then
+    echo "    Plain pip install failed - retrying with --break-system-packages..."
+    pip install --no-cache-dir --break-system-packages "$@"
+  fi
+}
 
 # -----------------------------------------------------------------------------
-echo ">>> 3/3  Checking the model file..."
+echo ">>> 3/4  Installing Python libraries..."
+echo "    (a) LED display + buttons (luma / gpiozero / lgpio) - needed for --display"
+pip_get luma.led_matrix gpiozero lgpio
+echo "    (b) Local AI model engine (llama-cpp-python) - compiles for ARM, be patient"
+pip_get llama-cpp-python
+
+# -----------------------------------------------------------------------------
+echo ">>> 4/4  Checking the model file..."
 if [ -f "models/SmolLM2-135M-Instruct-Q4_0.gguf" ]; then
   echo "    Model found (committed with the repo)."
 else
@@ -96,9 +108,14 @@ else
 fi
 
 echo ""
-echo ">>> Done. Test the local AI with:"
-echo "        python assistant.py --llm"
-echo "    (Without --llm it still works using the fast rule-based parser.)"
+echo ">>> Done! Everything is installed. Run the assistant with:"
+echo "        python assistant.py --llm --display"
+echo "    --display = show the timer on the LED matrix"
+echo "    --llm     = enable the local AI for flexible phrasing"
+echo "    (You can drop either flag. With neither, it's text-only + rule-based.)"
+echo ""
+echo "    NOTE: stop the button timer first so the display is free:"
+echo "        sudo systemctl stop exacthour.service"
 
 # =============================================================================
 #  TROUBLESHOOTING  (read this if the script fails)
@@ -140,4 +157,16 @@ echo "    (Without --llm it still works using the fast rule-based parser.)"
 #       Meaning: llama-cpp-python or the model file isn't found. The assistant
 #               still works on rule-based parsing. Re-run this script to finish
 #               the install; confirm the model exists under models/.
+#
+#  7) "Could not start LED display (No module named 'luma')"
+#       Cause:  The display libraries aren't in your venv (the systemd service
+#               uses the SYSTEM python, which has them; your venv may not).
+#       Fix:    This script now installs them. Manually, with the venv active:
+#                   pip install luma.led_matrix gpiozero lgpio
+#
+#  8) "Could not start LED display" with a SPI / device-busy error
+#       Cause:  Another program is using the matrix (main.py or the service).
+#       Fix:    Stop them first:
+#                   sudo systemctl stop exacthour.service
+#                   # and Ctrl-C any running `python main.py`
 # =============================================================================
