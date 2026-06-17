@@ -49,6 +49,31 @@ LED_ORIENTATION = -90         # -90 suits the common FC16 blue modules
 LED_ROTATE     = 0
 LED_INTENSITY  = 5            # 0-15 brightness
 
+
+# =============================================================================
+#  TINY BITMAP FONT (same glyphs as main.py: digits, colon, and B/I/T for BITTI)
+# -----------------------------------------------------------------------------
+#  Kept here (not imported from main.py) so --display needs ONLY luma - importing
+#  main.py would drag in gpiozero/lgpio, which the display doesn't use.
+# =============================================================================
+GLYPH_HEIGHT = 7
+GLYPHS = {
+    "0": [".##.", "#..#", "#..#", "#..#", "#..#", "#..#", ".##."],
+    "1": [".#..", "##..", ".#..", ".#..", ".#..", ".#..", "###."],
+    "2": [".##.", "#..#", "...#", "..#.", ".#..", "#...", "####"],
+    "3": ["###.", "...#", "...#", ".##.", "...#", "...#", "###."],
+    "4": ["#..#", "#..#", "#..#", "####", "...#", "...#", "...#"],
+    "5": ["####", "#...", "#...", "###.", "...#", "...#", "###."],
+    "6": [".##.", "#...", "#...", "###.", "#..#", "#..#", ".##."],
+    "7": ["####", "...#", "..#.", "..#.", ".#..", ".#..", ".#.."],
+    "8": [".##.", "#..#", "#..#", ".##.", "#..#", "#..#", ".##."],
+    "9": [".##.", "#..#", "#..#", ".###", "...#", "...#", ".##."],
+    ":": ["..", "##", "##", "..", "##", "##", ".."],
+    "B": ["###.", "#..#", "#..#", "###.", "#..#", "#..#", "###."],
+    "I": ["###", ".#.", ".#.", ".#.", ".#.", ".#.", "###"],
+    "T": ["###", ".#.", ".#.", ".#.", ".#.", ".#.", ".#."],
+}
+
 # --- Local LLM fallback (SmolLM2-135M, quantized GGUF) ------------------------
 # The model lives in ./models so it is committed alongside the code in one repo.
 MODEL_PATH   = "models/SmolLM2-135M-Instruct-Q4_0.gguf"
@@ -368,10 +393,11 @@ HELP_TEXT = (
 # =============================================================================
 class LedDisplay:
     def __init__(self):
+        # Only luma is needed here - NOT gpiozero/lgpio. The display is SPI-only;
+        # the buttons (gpiozero/lgpio) belong to main.py, not the assistant.
         from luma.led_matrix.device import max7219
         from luma.core.interface.serial import spi, noop
         from luma.core.render import canvas
-        from main import GLYPHS, GLYPH_HEIGHT      # <-- reuse main.py's font
 
         serial = spi(port=0, device=0, gpio=noop())
         self.device = max7219(serial, cascaded=LED_CASCADED,

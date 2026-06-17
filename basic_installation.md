@@ -448,6 +448,8 @@ Now `make 20 min` shows `20:00` counting down on the matrix, `pause` freezes it,
 
 > The display needs the matrix wired up (Section 7) and runs on the Pi. Make sure
 > `main.py` isn't running at the same time — only one program can use the display.
+> `--display` only needs `luma.led_matrix` (no `gpiozero`/`lgpio`), so if you only
+> want the screen working, `pip install luma.led_matrix` is enough.
 
 > The AI model file (`models/SmolLM2-135M-Instruct-Q4_0.gguf`, ~92 MB) already
 > comes with the project, so there is nothing to download.

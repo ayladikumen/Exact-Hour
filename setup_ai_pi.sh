@@ -70,11 +70,14 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-echo ">>> 2/4  Installing build tools..."
+echo ">>> 2/4  Installing build tools + button drivers (from apt, prebuilt)..."
 sudo apt-get update
-# swig is needed to build the lgpio wheel from source on Python versions that
-# have no prebuilt wheel (e.g. Python 3.13 on Bookworm).
-sudo apt-get install -y build-essential cmake swig python3-pip python3-dev python3-venv
+# build-essential/cmake: to compile llama-cpp-python.
+# python3-gpiozero / python3-lgpio: the BUTTON drivers for main.py, installed
+#   from apt as PREBUILT system packages - avoids compiling lgpio from source
+#   (which would need swig + the lgpio C library and often fails on the Pi).
+sudo apt-get install -y build-essential cmake python3-pip python3-dev python3-venv \
+                        python3-gpiozero python3-lgpio
 
 # Build/unpack temp goes to a real disk dir, NOT /tmp (which is a small RAM tmpfs
 # on the Pi and overflows with "No space left on device"). Single-threaded build
@@ -93,11 +96,13 @@ pip_get() {
 }
 
 # -----------------------------------------------------------------------------
-echo ">>> 3/4  Installing Python libraries..."
-echo "    (a) LED display + buttons (luma / gpiozero / lgpio) - needed for --display"
-pip_get luma.led_matrix gpiozero lgpio
+echo ">>> 3/4  Installing Python libraries (into the venv)..."
+echo "    (a) LED display driver (luma.led_matrix) - pure Python, needed for --display"
+pip_get luma.led_matrix
 echo "    (b) Local AI model engine (llama-cpp-python) - compiles for ARM, be patient"
 pip_get llama-cpp-python
+# Note: gpiozero/lgpio (buttons) come from apt above, not pip - the assistant's
+# --display doesn't use them, and main.py picks them up from the system Python.
 
 # -----------------------------------------------------------------------------
 echo ">>> 4/4  Checking the model file..."
@@ -166,12 +171,18 @@ echo "        sudo systemctl stop exacthour.service"
 #       Fix:    This script now installs them. Manually, with the venv active:
 #                   pip install luma.led_matrix gpiozero lgpio
 #
-#  9) "Building wheel for lgpio ... swig: No such file or directory"
-#       Cause:  lgpio has no prebuilt wheel for your Python, so pip builds it from
-#               source, which needs swig.
-#       Fix:    This script now installs swig. Manually:
-#                   sudo apt install -y swig
-#                   pip install lgpio
+#  9) "Building wheel for lgpio ... swig ... / cannot find -llgpio"
+#       Cause:  pip is trying to COMPILE lgpio from source in your venv. You don't
+#               need that - the assistant's --display uses only luma (SPI), and the
+#               buttons use the prebuilt apt package.
+#       Fix:    Don't pip install lgpio. Use the system package instead:
+#                   sudo apt install -y python3-lgpio python3-gpiozero
+#               If you want your venv to also SEE system packages (luma/lgpio),
+#               recreate it with system access (then you only pip-install the AI):
+#                   deactivate; rm -rf venv
+#                   python3 -m venv --system-site-packages venv
+#                   source venv/bin/activate
+#                   pip install --no-cache-dir llama-cpp-python
 #
 #  8) "Could not start LED display" with a SPI / device-busy error
 #       Cause:  Another program is using the matrix (main.py or the service).
