@@ -153,3 +153,106 @@ main.py
 - **Session logging** to local storage + export.
 - **Voice module** (offline wake word + simple commands).
 - Optional **RTC / NTP** for wall-clock features.
+
+---
+
+## 7. Text-First AI Command Layer (`assistant.py`)
+
+### What it is
+
+`assistant.py` is the **text-only prototype** of the README's "Voice-Triggered
+Local AI" module (README §4). We build it text-first (you TYPE commands) to prove
+the understand-and-act pipeline works before adding the hard parts (offline
+speech + the LED matrix). It runs offline, with no cloud, ever.
+
+### Architecture (three layers, each swappable without touching the others)
+
+```
+text input  →  parse()  →  Session  →  reply
+ (today: input())          (timer model)   (today: print())
+ (future: mic + wake word)                 (future: LED render() from main.py)
+```
+
+**`Session`** — timer state machine using the SAME state names as `ExactHour` in
+`main.py` (`IDLE / RUNNING / PAUSED / FINISHED`) so the two merge trivially later.
+`elapsed()` / `remaining()` are computed on demand from a `time.monotonic()`
+anchor (drift-free, no background loop). Methods: `start()`, `pause()`,
+`resume()`, `add_minutes()`, `stop()`, `elapsed()`, `remaining()`, `is_finished()`.
+
+**The "brain" is a HYBRID** — most efficient, and deliberately leaves RAM free for
+the future voice trigger:
+
+1. **`rule_parse()`** — fast, offline, **zero extra RAM**. Extracts the first
+   number, keyword-matches the action (flexible phrasing). The *primary* path.
+2. **`LlmParser` (SmolLM2-135M)** — a tiny local LLM used **only as a fallback**
+   when the rules return `unknown`. **Lazy-loaded**: if the rules always
+   understand you, the model is never loaded and uses no RAM. Enabled with
+   `--llm`; needs `llama-cpp-python` + the model file (i.e. on the Pi).
+
+`parse(text, llm)` tries the rules first and consults the LLM only on a miss.
+
+| Intent | Rule trigger keywords |
+|--------|-----------------------|
+| start (+ set goal) | `start`, `begin`, `go`, `make`, `set`, `run`, bare `N min` |
+| stop  | `stop`, `end`, `finish`, `done`, `reset`, `cancel` |
+| pause | `pause`, `hold`, `wait`, `freeze` |
+| resume| `resume`, `continue`, `unpause`, `keep going` |
+| status| `how long`, `how much`, `how am i`, `worked`, `left`, `remaining` |
+| add   | `add`, `more`, `extend`, `plus`, `another` (+ number) |
+| help / quit | `help`, `commands` / `exit`, `quit` |
+
+Unrecognised input → friendly fallback, never a crash.
+
+### The local AI model (committed with the repo)
+
+- **Model:** `models/SmolLM2-135M-Instruct-Q4_0.gguf` (~92 MB), from
+  [bartowski/SmolLM2-135M-Instruct-GGUF](https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF).
+- **Why this one:** 135M is about the smallest *usable* instruct model; Q4_0 keeps
+  it **under GitHub's 100 MB per-file limit** (so it commits in one normal `git
+  push`, no Git LFS) and llama.cpp auto-repacks Q4_0 for the Pi's ARM cores.
+- **Why not Ollama:** Ollama needs 4–8 GB RAM and will not run on 512 MB. We use
+  `llama-cpp-python` (the llama.cpp Python binding) directly instead.
+
+### RAM budget on the Pi Zero 2 W (512 MB) — leaving room for voice
+
+| Consumer | Approx RAM |
+|----------|-----------|
+| Raspberry Pi OS Lite (headless) | ~100 MB |
+| **Reserved for future wake-word listener** | ~80–120 MB |
+| SmolLM2-135M Q4_0, `n_ctx=256`, mmap'd | ~150 MB *(only while a command is being understood)* |
+| Timer app + Python | ~40 MB |
+
+The hybrid + lazy-load design means the LLM is loaded only on a rule miss, and
+wake-word detection and LLM inference run **sequentially** (you say the wake word,
+*then* the command), so their peaks don't overlap. A 1 GB swap file
+(`setup_ai_pi.sh`) absorbs any spikes.
+
+### How to run
+
+```bash
+py assistant.py --selftest   # canned transcript, rule-based, no model needed (PC)
+py assistant.py              # interactive, rule-based only (PC)
+python assistant.py --llm    # interactive, with SmolLM2 fallback (on the Pi)
+```
+
+### Files added for this module
+
+- `assistant.py` — the assistant (Session + hybrid parser + REPL + self-test).
+- `models/SmolLM2-135M-Instruct-Q4_0.gguf` — the committed local AI model (~92 MB).
+- `requirements.txt` — `llama-cpp-python` (rule-based path needs nothing).
+- `setup_ai_pi.sh` — Pi-side setup: 1 GB swap + `llama-cpp-python` install.
+
+### Future swap-in path
+
+- **Speech in:** replace `input()` with an offline STT/wake-word engine (e.g.
+  openWakeWord or Vosk) — it produces the same string `parse()` already eats.
+- **Display out:** replace `print()` with `render()` from `main.py`.
+- **Merge:** fold `Session` into `ExactHour` so buttons + voice share one timer.
+
+### Status
+
+- [x] `assistant.py` written; rule-based pipeline verified on PC (`--selftest`).
+- [x] SmolLM2-135M Q4_0 model committed under `models/`.
+- [x] `requirements.txt` + `setup_ai_pi.sh` for the Pi.
+- [ ] Validate the `--llm` fallback on real Pi Zero 2 W hardware (latency/RAM).
+- [ ] Add the offline wake-word + speech layer (voice stage).

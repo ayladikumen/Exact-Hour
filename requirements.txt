@@ -1,0 +1,22 @@
+# Exact Hour - Python dependencies
+# =============================================================================
+# The text assistant (assistant.py) runs on the STANDARD LIBRARY ALONE for its
+# rule-based parsing. You need to install NOTHING to test it on your PC:
+#     py assistant.py --selftest
+#     py assistant.py
+#
+# The packages below are only needed on the Raspberry Pi to enable the extras.
+# =============================================================================
+
+# --- Local AI fallback: SmolLM2-135M via llama.cpp -----------------------------
+# Enables flexible natural-language understanding for commands the rules miss.
+# Compiles from source during install on the Pi (ARM); takes several minutes.
+# Run the assistant with:  python assistant.py --llm
+llama-cpp-python>=0.3.0
+
+# --- LED matrix + buttons (for main.py, the hardware countdown timer) ----------
+# Already covered by basic_installation.md; listed here for completeness.
+# Uncomment if you want everything in one `pip install -r requirements.txt`:
+# luma.led_matrix
+# gpiozero
+# lgpio
