@@ -70,12 +70,19 @@ echo ">>> 2/3  Installing build tools + llama-cpp-python (compiles for ARM - be 
 sudo apt-get update
 sudo apt-get install -y build-essential cmake python3-pip python3-dev python3-venv
 
+# Build temp goes to a real disk dir, NOT /tmp (which is a small RAM tmpfs on the
+# Pi and overflows with "No space left on device" while unpacking/compiling).
+# Single-threaded build keeps RAM pressure low on the Pi Zero.
+mkdir -p "$HOME/tmp"
+export TMPDIR="$HOME/tmp"
+export CMAKE_BUILD_PARALLEL_LEVEL=1
+
 # Install into the active venv. If pip refuses (e.g. no venv, externally-managed),
 # retry with --break-system-packages so the install still succeeds.
 pip install --upgrade pip || true
-if ! pip install llama-cpp-python; then
+if ! pip install --no-cache-dir llama-cpp-python; then
   echo "    Plain pip install failed - retrying with --break-system-packages..."
-  pip install --break-system-packages llama-cpp-python
+  pip install --no-cache-dir --break-system-packages llama-cpp-python
 fi
 
 # -----------------------------------------------------------------------------
@@ -116,12 +123,20 @@ echo "    (Without --llm it still works using the fast rule-based parser.)"
 #  3) "pip: command not found"
 #       Fix:    sudo apt install -y python3-pip   (then re-run the script)
 #
-#  4) llama-cpp-python build is extremely slow or gets killed
+#  4) "ERROR: ... OSError: [Errno 28] No space left on device"
+#       Cause:  /tmp on the Pi is a small RAM-backed tmpfs; the build overflows it
+#               even when your SD card has tons of free space (check: df -h /).
+#       Fix:    This script now points the build at ~/tmp on the real disk. To do
+#               it manually:
+#                   mkdir -p ~/tmp
+#                   TMPDIR=~/tmp pip install --no-cache-dir llama-cpp-python
+#
+#  5) llama-cpp-python build is extremely slow or gets killed
 #       Cause:  Compiling on a Pi Zero 2 W is slow and RAM-tight.
 #       Fix:    Make sure swap is on (step 1 above). The build can take 15-30
 #               min - let it finish. If it's "Killed", add more swap (2G) and retry.
 #
-#  5) "python assistant.py --llm" says "Local AI unavailable"
+#  6) "python assistant.py --llm" says "Local AI unavailable"
 #       Meaning: llama-cpp-python or the model file isn't found. The assistant
 #               still works on rule-based parsing. Re-run this script to finish
 #               the install; confirm the model exists under models/.
