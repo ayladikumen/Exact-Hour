@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- A plain dark window theme. Jetpack Compose paints the real UI; this only
+         controls the initial window + system bar colours so there is no white
+         flash before Compose draws. -->
+    <style name="Theme.ExactHourRemote" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/eh_background</item>
+        <item name="android:statusBarColor">@color/eh_background</item>
+        <item name="android:navigationBarColor">@color/eh_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

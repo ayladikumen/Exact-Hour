@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Minimalist amber LED "display" with a blinking colon - evokes the clock. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- the display bezel -->
+    <path
+        android:strokeColor="#FFB020"
+        android:strokeWidth="3"
+        android:fillColor="#00000000"
+        android:pathData="M32,42 h44 a4,4 0 0 1 4,4 v16 a4,4 0 0 1 -4,4 h-44 a4,4 0 0 1 -4,-4 v-16 a4,4 0 0 1 4,-4 z" />
+    <!-- colon, top dot -->
+    <path
+        android:fillColor="#FFB020"
+        android:pathData="M51,48 h4 v4 h-4 z" />
+    <!-- colon, bottom dot -->
+    <path
+        android:fillColor="#FFB020"
+        android:pathData="M51,56 h4 v4 h-4 z" />
+</vector>
