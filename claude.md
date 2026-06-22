@@ -256,3 +256,77 @@ python assistant.py --llm    # interactive, with SmolLM2 fallback (on the Pi)
 - [x] `requirements.txt` + `setup_ai_pi.sh` for the Pi.
 - [ ] Validate the `--llm` fallback on real Pi Zero 2 W hardware (latency/RAM).
 - [ ] Add the offline wake-word + speech layer (voice stage).
+
+
+---
+
+## 8. Local-Network Remote Control + Android App
+
+### What it is
+
+The clock can now be driven from a phone on the **same Wi-Fi network** — the
+README's "companion" direction, done the simplest robust way: a tiny HTTP+JSON
+server on the Pi and a minimalist native Android app that talks to it.
+
+### Thread-safety model (the important bit)
+
+The timer and the MAX7219 are touched by **exactly one thread** — the main loop.
+The HTTP server runs in its own daemon thread and must never call timer/display
+methods directly (two threads on the SPI bus = corruption). So:
+
+```
+phone --HTTP--> HTTP thread --enqueue Command--> CommandBus
+main loop --drains, applies on ITS thread, publishes a status snapshot-->
+HTTP thread --reads snapshot--> JSON reply
+```
+
+`remote_control.pump(timer, control)` is called once per main-loop iteration: it
+drains queued commands, applies each via `apply_command()`, hands the fresh
+status back to the waiting request, and publishes the latest snapshot for
+`GET /api/status`. The HTTP side only ever enqueues + reads an immutable dict.
+
+### Files added / changed
+
+- `remote_control.py` — **NEW.** Stdlib-only (`http.server`, `json`, `queue`,
+  `threading`, `socket`) so it has ZERO hardware deps and is unit-testable on a PC.
+  Holds `RemoteControl` (queue + snapshot + server), `Command`, `apply_command()`,
+  `pump()`, and `local_ip()`.
+- `test_remote_control.py` — **NEW.** Spins up the real server against a
+  `FakeTimer` and asserts the whole API. **20/20 pass** with `py test_remote_control.py`
+  (runnable on the PC — this is the part validated without hardware).
+- `main.py` — **CHANGED, additively + guarded.** New `cmd_*` methods + `status_dict()`
+  on `ExactHour` (thin wrappers over the existing button logic, so app and buttons
+  behave identically). `ENABLE_REMOTE`/`REMOTE_PORT` config; server started in
+  `main()` inside a try/except; `pump()` called in `run()`. If the import or bind
+  fails, or `ENABLE_REMOTE=False`, it runs hardware-only exactly as before.
+- `android-app/` — **NEW folder.** Native Kotlin + Jetpack Compose app.
+
+### The API (clock side)
+
+`GET /api/status` · `POST /api/toggle|reset` · `POST /api/adjust {delta}` ·
+`POST /api/set {minutes,seconds}`. Adjust/set obey the same "locked while RUNNING"
+rule as the buttons. Status JSON:
+`{state, minutes, seconds, remaining_seconds, display, max_minutes, name}`.
+
+### Android app (`android-app/`)
+
+- **Stack:** Kotlin 2.0.21 · AGP 8.13.2 · Gradle 8.13 · Compose BOM 2024.09.00 ·
+  minSdk 26 / targetSdk 34. Networking via `HttpURLConnection` + bundled `org.json`
+  (no Retrofit/OkHttp) and coroutines on `Dispatchers.IO`.
+- **UI:** minimalist dark "instrument" — near-black, one amber accent (echoes the
+  LED), monospace readout. Big context button (START/PAUSE/RESUME/NEW), presets
+  (5/15/25/45), ± steppers (disabled while running), RESET, and a tappable
+  connection pill that opens an IP/port dialog. IP/port persisted in SharedPreferences.
+- **Permissions:** `INTERNET` + `usesCleartextTraffic="true"` (LAN HTTP, no TLS).
+- **Build caveat:** open `android-app/` in Android Studio (it provisions Gradle +
+  SDK). The binary `gradle-wrapper.jar` is intentionally not committed (can't ship
+  as text); for CLI builds run `gradle wrapper --gradle-version 8.13` once.
+
+### Status
+
+- [x] `remote_control.py` + `test_remote_control.py` written; **20/20 tests pass** on PC.
+- [x] `main.py` wired up (guarded, additive); `py_compile` clean.
+- [x] Android app written; XML validated, code reviewed (no SDK on this machine to
+      produce an APK — builds in Android Studio).
+- [ ] Run `main.py` on the real Pi and confirm the phone controls it over Wi-Fi.
+- [ ] Build/install the APK from Android Studio and test against the live clock.

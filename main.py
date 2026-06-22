@@ -25,12 +25,22 @@
 #  comment explaining exactly what it does and why.
 # =============================================================================
 
+import sys                                           # stderr for fault logging
 import time                                          # for timing (monotonic clock)
+import traceback                                     # log remote-control faults
 
 from luma.led_matrix.device import max7219           # the MAX7219 display driver
 from luma.core.interface.serial import spi, noop     # SPI connection helpers
 from luma.core.render import canvas                  # lets us draw onto the matrix
 from gpiozero import Button                           # easy debounced GPIO buttons
+
+# Optional local-network remote control (lets the Android app drive the clock).
+# remote_control.py has NO hardware deps; the guard means main.py still runs as a
+# hardware-only timer even if that file is removed.
+try:
+    import remote_control as rc
+except ImportError:
+    rc = None
 
 
 # =============================================================================
@@ -84,6 +94,11 @@ PULSE_STEP_S = 0.018       # time per pulse step (~108 ms up + ~108 ms down)
 TICK_S      = 1.0          # one countdown step = 1 second
 LOOP_SLEEP  = 0.005        # tiny pause each loop so we don't peg the CPU
 FADE_STEP_S = 0.04         # time per step of the boot / BITTI fade-in
+
+# ----- Remote control (optional - control the clock from the Android app) -----
+ENABLE_REMOTE = True       # serve the HTTP control API on the local Wi-Fi network
+REMOTE_HOST   = "0.0.0.0"  # 0.0.0.0 = listen on every interface (so the phone can reach it)
+REMOTE_PORT   = 8080       # the app connects to http://<this-pi-ip>:8080
 
 
 # =============================================================================
@@ -284,11 +299,12 @@ class HoldButton:
 #  the Arduino beta so the two are easy to compare side by side.
 # =============================================================================
 class ExactHour:
-    def __init__(self, device, btn_up, btn_down, btn_start):
+    def __init__(self, device, btn_up, btn_down, btn_start, control=None):
         self.device    = device
         self.btn_up    = btn_up
         self.btn_down  = btn_down
         self.btn_start = btn_start
+        self.control   = control         # RemoteControl bridge, or None if disabled
 
         # --- timer state ---
         self.state   = "IDLE"            # IDLE / RUNNING / PAUSED / FINISHED
@@ -314,6 +330,11 @@ class ExactHour:
         # Start dark + blank; the boot fade-in will bring it up.
         self.device.contrast(0)
         self.device.clear()
+
+        # Seed the remote-control snapshot so GET /api/status works immediately,
+        # even during the boot fade before the main loop's first publish.
+        if self.control is not None:
+            self.control.publish(self.status_dict())
 
     # ----- low-level display helpers -----------------------------------------
 
@@ -500,6 +521,65 @@ class ExactHour:
         self.show_time()
         self.reset_blink()
 
+    # ----- remote-control command surface ------------------------------------
+    #  These mirror the physical buttons so the Android app and the buttons share
+    #  EXACTLY the same behaviour. remote_control.pump() calls them from the main
+    #  loop (this thread), so they are no less safe than a real button press.
+
+    def cmd_toggle(self):
+        """The big START button: start / pause / resume / clear-finished."""
+        self.on_start_tap()
+
+    def cmd_start(self):
+        if self.state == "IDLE":
+            self.on_start_tap()
+
+    def cmd_pause(self):
+        if self.state == "RUNNING":
+            self.on_start_tap()
+
+    def cmd_resume(self):
+        if self.state == "PAUSED":
+            self.on_start_tap()
+
+    def cmd_reset(self):
+        self._reset_to_idle()
+
+    def cmd_adjust(self, delta):
+        """+/- minutes. adjust() already enforces the 'locked while RUNNING' rule."""
+        self.adjust(delta)
+
+    def cmd_set(self, minutes, seconds=0):
+        """Set an absolute time. Allowed in IDLE/PAUSED; clears a FINISHED screen
+        first; ignored while RUNNING (the same lock the buttons obey)."""
+        if self.state == "FINISHED":
+            self._reset_to_idle()        # leave the finished screen -> now IDLE
+        if self.state == "RUNNING":
+            return                       # locked while counting; pause first
+        self.minutes = minutes
+        self.seconds = seconds
+        self.clamp()
+        if self.state == "PAUSED":
+            self.crossed_sub_minute = (self.minutes < 60)
+            self.seconds = 0             # clean resume, like adjust() does
+            self.set_intensity(INTENSITY_PAUSED)
+        else:
+            self.reset_blink()
+        self.show_time()
+
+    def status_dict(self):
+        """The JSON snapshot the Android app reads from GET /api/status."""
+        display = "BITTI" if self.state == "FINISHED" else self.time_text()
+        return {
+            "state": self.state,
+            "minutes": self.minutes,
+            "seconds": self.seconds,
+            "remaining_seconds": self.minutes * 60 + self.seconds,
+            "display": display,
+            "max_minutes": MAX_MINUTES,
+            "name": "Exact Hour",
+        }
+
     def tick(self):
         """Drift-free countdown step. Only does anything while RUNNING."""
         if self.state != "RUNNING":
@@ -564,6 +644,15 @@ class ExactHour:
                 # 1) advance any in-progress brightness pulse
                 self.handle_pulse()
 
+                # 1b) apply any commands from the Android app (over Wi-Fi) on
+                #     THIS thread, then publish the latest status for it to read.
+                #     Guard it so a remote-control fault can never stop the clock.
+                if self.control is not None:
+                    try:
+                        rc.pump(self, self.control)
+                    except Exception:
+                        traceback.print_exc(file=sys.stderr)
+
                 # 2) START button (acts on release, like the beta)
                 if self.btn_start.tapped():
                     self.on_start_tap()
@@ -610,8 +699,22 @@ def main():
     btn_down  = HoldButton(PIN_DOWN)
     btn_start = HoldButton(PIN_START)
 
+    # Optionally bring up the local-network remote control for the Android app.
+    # If it can't start (e.g. port in use), we log it and run hardware-only.
+    control = None
+    if ENABLE_REMOTE and rc is not None:
+        try:
+            control = rc.RemoteControl()
+            control.start_server(REMOTE_HOST, REMOTE_PORT)
+            print("Exact Hour remote control is live at http://{}:{}".format(
+                rc.local_ip(), REMOTE_PORT))
+            print("Type that address into the Exact Hour Android app.")
+        except OSError as exc:
+            print("Remote control disabled (server could not start: {}).".format(exc))
+            control = None
+
     # Build the timer and run it.
-    app = ExactHour(device, btn_up, btn_down, btn_start)
+    app = ExactHour(device, btn_up, btn_down, btn_start, control=control)
     app.run()
 
 
