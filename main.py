@@ -25,7 +25,9 @@
 #  comment explaining exactly what it does and why.
 # =============================================================================
 
+import sys                                           # stderr for fault logging
 import time                                          # for timing (monotonic clock)
+import traceback                                     # log remote-control faults
 
 from luma.led_matrix.device import max7219           # the MAX7219 display driver
 from luma.core.interface.serial import spi, noop     # SPI connection helpers
@@ -644,8 +646,12 @@ class ExactHour:
 
                 # 1b) apply any commands from the Android app (over Wi-Fi) on
                 #     THIS thread, then publish the latest status for it to read.
+                #     Guard it so a remote-control fault can never stop the clock.
                 if self.control is not None:
-                    rc.pump(self, self.control)
+                    try:
+                        rc.pump(self, self.control)
+                    except Exception:
+                        traceback.print_exc(file=sys.stderr)
 
                 # 2) START button (acts on release, like the beta)
                 if self.btn_start.tapped():

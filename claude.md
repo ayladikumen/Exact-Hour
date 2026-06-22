@@ -310,7 +310,7 @@ rule as the buttons. Status JSON:
 
 ### Android app (`android-app/`)
 
-- **Stack:** Kotlin 2.0.21 · AGP 8.5.2 · Gradle 8.9 · Compose BOM 2024.09 ·
+- **Stack:** Kotlin 2.0.21 · AGP 8.13.2 · Gradle 8.13 · Compose BOM 2024.09.00 ·
   minSdk 26 / targetSdk 34. Networking via `HttpURLConnection` + bundled `org.json`
   (no Retrofit/OkHttp) and coroutines on `Dispatchers.IO`.
 - **UI:** minimalist dark "instrument" — near-black, one amber accent (echoes the
@@ -320,7 +320,7 @@ rule as the buttons. Status JSON:
 - **Permissions:** `INTERNET` + `usesCleartextTraffic="true"` (LAN HTTP, no TLS).
 - **Build caveat:** open `android-app/` in Android Studio (it provisions Gradle +
   SDK). The binary `gradle-wrapper.jar` is intentionally not committed (can't ship
-  as text); for CLI builds run `gradle wrapper --gradle-version 8.9` once.
+  as text); for CLI builds run `gradle wrapper --gradle-version 8.13` once.
 
 ### Status
 

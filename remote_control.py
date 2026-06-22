@@ -27,8 +27,15 @@ import json
 import os
 import queue
 import socket
+import sys
 import threading
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# Largest POST body we will read. Our requests are a few bytes ({"delta": 5});
+# this just stops a misbehaving/hostile client from making us block on a huge
+# (or never-arriving) Content-Length.
+MAX_BODY_SIZE = 64 * 1024
 
 
 # =============================================================================
@@ -51,10 +58,11 @@ class Command:
 # =============================================================================
 class RemoteControl:
     def __init__(self):
-        self._queue    = queue.Queue()
-        self._lock     = threading.Lock()
-        self._snapshot = {}
-        self._httpd    = None
+        self._queue       = queue.Queue()
+        self._lock        = threading.Lock()
+        self._snapshot    = {}
+        self._httpd       = None
+        self._http_thread = None
 
     # ----- called by the HTTP thread -----------------------------------------
 
@@ -68,16 +76,24 @@ class RemoteControl:
         return cmd.result if cmd.result is not None else self.snapshot()
 
     def snapshot(self):
-        """Return a copy of the most recently published status."""
+        """Return the most recently published status snapshot.
+
+        We return the stored dict directly (no copy): every dict that reaches
+        publish() comes from a fresh timer.status_dict() and is never mutated
+        afterwards, and the HTTP side only reads it (json.dumps). The lock makes
+        the reference read/write atomic, which is all we need."""
         with self._lock:
-            return dict(self._snapshot)
+            return self._snapshot
 
     # ----- called by the main (timer) loop -----------------------------------
 
     def publish(self, status):
-        """Main loop calls this every iteration with the timer's current state."""
+        """Main loop calls this every iteration with the timer's current state.
+        `status` must be a freshly built dict the caller will not mutate again
+        (status_dict() returns a new dict each call), so storing it directly is
+        safe and avoids a dict copy on every loop iteration."""
         with self._lock:
-            self._snapshot = dict(status)
+            self._snapshot = status
 
     def drain(self):
         """Return (and remove) every command currently waiting in the queue."""
@@ -96,16 +112,24 @@ class RemoteControl:
         control = self
         index = _load_index()        # optional built-in web remote (web_remote.html)
         self._httpd = ThreadingHTTPServer((host, port), _make_handler(control, index))
-        thread = threading.Thread(target=self._httpd.serve_forever,
-                                  name="exact-hour-http", daemon=True)
-        thread.start()
+        self._http_thread = threading.Thread(target=self._httpd.serve_forever,
+                                             name="exact-hour-http", daemon=True)
+        self._http_thread.start()
         return self._httpd
 
     def stop_server(self):
-        if self._httpd is not None:
-            self._httpd.shutdown()
-            self._httpd.server_close()
-            self._httpd = None
+        if self._httpd is None:
+            return
+        # shutdown() blocks until serve_forever() returns, so it must NOT be
+        # called from the HTTP thread itself (that would deadlock). Guard against
+        # a future caller accidentally doing so from inside a request handler.
+        if threading.current_thread() is self._http_thread:
+            raise RuntimeError("stop_server() must be called from the main thread, "
+                               "not the HTTP handler thread (would deadlock).")
+        self._httpd.shutdown()
+        self._httpd.server_close()
+        self._httpd = None
+        self._http_thread = None
 
 
 # =============================================================================
@@ -146,6 +170,9 @@ def pump(timer, control):
             apply_command(timer, cmd)
             cmd.result = timer.status_dict()
         except Exception:                 # never let a bad request crash the loop
+            # Keep the clock running, but don't swallow the cause silently -
+            # log it to stderr so a real bug is at least visible in the journal.
+            traceback.print_exc(file=sys.stderr)
             cmd.result = timer.status_dict()
         finally:
             cmd.done.set()
@@ -196,29 +223,40 @@ def _make_handler(control, index_html=None):
 
         # ---- helpers --------------------------------------------------------
         def _send(self, code, payload):
-            body = json.dumps(payload).encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                pass        # client hung up mid-response; nothing we can do
 
         def _send_html(self, body):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                pass
 
         def _read_json(self):
             try:
                 length = int(self.headers.get("Content-Length", 0) or 0)
             except ValueError:
                 return {}
-            if length <= 0:
+            # Ignore non-positive or oversized bodies (a bogus huge Content-Length
+            # would otherwise block self.rfile.read waiting for bytes that never come).
+            if length <= 0 or length > MAX_BODY_SIZE:
                 return {}
-            raw = self.rfile.read(length)
+            try:
+                raw = self.rfile.read(length)
+            except OSError:
+                return {}       # client disconnected mid-body
             try:
                 data = json.loads(raw or b"{}")
                 return data if isinstance(data, dict) else {}
@@ -229,44 +267,55 @@ def _make_handler(control, index_html=None):
             return self.path.split("?", 1)[0].rstrip("/") or "/"
 
         # ---- verbs ----------------------------------------------------------
+        #  Each verb is wrapped so a malformed request or a dropped connection
+        #  only ends that one request - it never tears down the handler thread.
         def do_GET(self):
-            path = self._path()
-            if path == "/" and index_html is not None:
-                self._send_html(index_html)            # built-in web remote page
-            elif path in ("/api/status", "/api", "/"):
-                self._send(200, control.snapshot())    # JSON status snapshot
-            else:
-                self._send(404, {"error": "not found"})
+            try:
+                path = self._path()
+                if path == "/" and index_html is not None:
+                    self._send_html(index_html)            # built-in web remote page
+                elif path in ("/api/status", "/api", "/"):
+                    self._send(200, control.snapshot())    # JSON status snapshot
+                else:
+                    self._send(404, {"error": "not found"})
+            except Exception:
+                traceback.print_exc(file=sys.stderr)
 
         def do_POST(self):
-            action = _POST_ROUTES.get(self._path())
-            if action is None:
-                self._send(404, {"error": "not found"})
-                return
+            try:
+                action = _POST_ROUTES.get(self._path())
+                if action is None:
+                    self._send(404, {"error": "not found"})
+                    return
 
-            value = None
-            if action == "adjust":
-                try:
-                    value = int(self._read_json().get("delta", 0))
-                except (TypeError, ValueError):
-                    value = 0
-            elif action == "set":
-                body = self._read_json()
-                try:
-                    value = {"minutes": int(body.get("minutes", 0)),
-                             "seconds": int(body.get("seconds", 0))}
-                except (TypeError, ValueError):
-                    value = {"minutes": 0, "seconds": 0}
+                value = None
+                if action == "adjust":
+                    try:
+                        value = int(self._read_json().get("delta", 0))
+                    except (TypeError, ValueError):
+                        value = 0
+                elif action == "set":
+                    body = self._read_json()
+                    try:
+                        value = {"minutes": int(body.get("minutes", 0)),
+                                 "seconds": int(body.get("seconds", 0))}
+                    except (TypeError, ValueError):
+                        value = {"minutes": 0, "seconds": 0}
 
-            self._send(200, control.submit(action, value))
+                self._send(200, control.submit(action, value))
+            except Exception:
+                traceback.print_exc(file=sys.stderr)
 
         def do_OPTIONS(self):
-            self.send_response(204)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
+            try:
+                self.send_response(204)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            except OSError:
+                pass
 
         def log_message(self, *args):
             pass        # keep the console quiet (no per-request logging)

@@ -2,6 +2,7 @@ package com.exacthour.remote.data
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONException
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -46,7 +47,7 @@ class ExactHourClient(baseUrl: String) {
                     if (body != null) {
                         doOutput = true
                         setRequestProperty("Content-Type", "application/json")
-                        outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                        outputStream?.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
                     }
                 }
                 val code = conn.responseCode
@@ -56,7 +57,13 @@ class ExactHourClient(baseUrl: String) {
                 }.orEmpty()
 
                 if (code in 200..299) {
-                    Outcome.Ok(parse(JSONObject(text)))
+                    // A 2xx with an empty/garbled body is a server problem, not an
+                    // offline clock - report it distinctly instead of crashing.
+                    try {
+                        Outcome.Ok(parse(JSONObject(text)))
+                    } catch (e: JSONException) {
+                        Outcome.Error("Bad response from clock")
+                    }
                 } else {
                     Outcome.Error("HTTP $code")
                 }

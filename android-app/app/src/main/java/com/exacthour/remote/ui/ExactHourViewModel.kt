@@ -33,6 +33,8 @@ class ExactHourViewModel(app: Application) : AndroidViewModel(app) {
 
     private var client: ExactHourClient? = null
     private var pollJob: Job? = null
+    private var commandJob: Job? = null
+    private var consecutiveFailures = 0       // for debouncing the "offline" flip
 
     init {
         val host = prefs.getString(KEY_HOST, "").orEmpty()
@@ -45,7 +47,12 @@ class ExactHourViewModel(app: Application) : AndroidViewModel(app) {
     fun connect(host: String, port: Int) {
         val h = host.trim()
         prefs.edit().putString(KEY_HOST, h).putInt(KEY_PORT, port).apply()
+        // Stop talking to the old address before swapping the client, so an
+        // in-flight poll/command can't land against the new host:port.
+        pollJob?.cancel()
+        commandJob?.cancel()
         client = if (h.isNotBlank()) ExactHourClient("$h:$port") else null
+        consecutiveFailures = 0
         _ui.value = _ui.value.copy(
             host = h,
             port = port,
@@ -67,18 +74,29 @@ class ExactHourViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Fire a command, then immediately reflect the returned status. */
+    /** Fire a command, then immediately reflect the returned status. A newer tap
+     *  supersedes an in-flight one so rapid taps can't apply results out of order. */
     private fun send(block: suspend (ExactHourClient) -> ExactHourClient.Outcome) {
         val c = client ?: return
-        viewModelScope.launch { applyOutcome(block(c)) }
+        commandJob?.cancel()
+        commandJob = viewModelScope.launch { applyOutcome(block(c)) }
     }
 
     private fun applyOutcome(outcome: ExactHourClient.Outcome) {
         _ui.value = when (outcome) {
-            is ExactHourClient.Outcome.Ok ->
+            is ExactHourClient.Outcome.Ok -> {
+                consecutiveFailures = 0
                 _ui.value.copy(status = outcome.status, connected = true, error = null)
-            is ExactHourClient.Outcome.Error ->
-                _ui.value.copy(connected = false, error = outcome.message)
+            }
+            is ExactHourClient.Outcome.Error -> {
+                // Don't flap to "offline" on a single dropped poll (Wi-Fi hiccups
+                // are common); only show disconnected after two misses in a row.
+                consecutiveFailures++
+                if (consecutiveFailures >= 2)
+                    _ui.value.copy(connected = false, error = outcome.message)
+                else
+                    _ui.value
+            }
         }
     }
 

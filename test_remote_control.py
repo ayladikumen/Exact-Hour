@@ -62,14 +62,19 @@ class FakeTimer:
         self._reset()
 
     def cmd_adjust(self, delta):
-        if self.state in ("RUNNING", "FINISHED"):
+        if self.state == "FINISHED":      # any adjust clears the finished screen (mirrors main.py)
+            self._reset()
             return
+        if self.state == "RUNNING":
+            return                        # locked while running - pause first
         self.minutes = max(0, min(MAX_MINUTES, self.minutes + delta))
         self.seconds = 0
 
     def cmd_set(self, minutes, seconds=0):
-        if self.state in ("RUNNING", "FINISHED"):
-            return
+        if self.state == "FINISHED":      # clear the finished screen first, then apply (mirrors main.py)
+            self._reset()
+        if self.state == "RUNNING":
+            return                        # locked while running - pause first
         self.minutes = max(0, min(MAX_MINUTES, minutes))
         self.seconds = max(0, min(59, seconds))
 

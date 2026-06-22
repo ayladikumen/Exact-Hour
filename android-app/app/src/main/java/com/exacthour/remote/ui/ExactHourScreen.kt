@@ -349,7 +349,7 @@ private fun SettingsDialog(
         },
         confirmButton = {
             TextButton(
-                onClick = { onSave(host.trim(), portText.toIntOrNull() ?: 8080) },
+                onClick = { onSave(host.trim(), (portText.toIntOrNull() ?: 8080).coerceIn(1, 65535)) },
                 enabled = host.isNotBlank(),
             ) { Text("Connect") }
         },

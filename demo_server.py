@@ -58,14 +58,19 @@ class DemoTimer:
         self._reset()
 
     def cmd_adjust(self, delta):
-        if self.state in ("RUNNING", "FINISHED"):
+        if self.state == "FINISHED":      # any adjust clears the finished screen (mirrors main.py)
+            self._reset()
             return
+        if self.state == "RUNNING":
+            return                        # locked while running - pause first
         self.minutes = max(0, min(MAX_MINUTES, self.minutes + delta))
         self.seconds = 0
 
     def cmd_set(self, minutes, seconds=0):
-        if self.state in ("RUNNING", "FINISHED"):
-            return
+        if self.state == "FINISHED":      # clear the finished screen first, then apply (mirrors main.py)
+            self._reset()
+        if self.state == "RUNNING":
+            return                        # locked while running - pause first
         self.minutes = max(0, min(MAX_MINUTES, minutes))
         self.seconds = max(0, min(59, seconds))
 
@@ -130,10 +135,12 @@ def main():
 
     threading.Thread(target=loop, daemon=True).start()
 
-    # Bind locally only (no firewall prompt). Try a couple of ports.
+    # Bind on all interfaces so phones on the same Wi-Fi can reach it via the
+    # machine's LAN IP (Windows may show a firewall prompt the first time).
+    lan_ip = rc.local_ip()
     for candidate in (port, port + 1, port + 2):
         try:
-            control.start_server(host="127.0.0.1", port=candidate)
+            control.start_server(host="0.0.0.0", port=candidate)
             port = candidate
             break
         except OSError:
@@ -141,15 +148,18 @@ def main():
     else:
         raise SystemExit("Could not bind a demo port near {}.".format(port))
 
-    print("Exact Hour demo is live -> http://localhost:{}/".format(port))
+    print("Exact Hour demo is live -> http://{}:{}/".format(lan_ip, port))
+    print("API base for the Android app -> http://{}:{}/api/".format(lan_ip, port))
     print("Open it in a browser; press Ctrl-C to stop.")
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
+        print("\nDemo stopped.")
+    finally:
+        # Always release the loop thread and the socket, however we exit.
         stop.set()
         control.stop_server()
-        print("\nDemo stopped.")
 
 
 if __name__ == "__main__":

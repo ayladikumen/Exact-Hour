@@ -136,6 +136,8 @@ class Session:
 
     def add_minutes(self, minutes):
         """Extend the goal by `minutes` (turns an open session into a goal one)."""
+        if not minutes:
+            return                         # "add" with no number is a no-op, not +1
         self.target_sec += _clamp_minutes(minutes) * 60
         self._announced_end = False        # a new goal may push the end further out
 
