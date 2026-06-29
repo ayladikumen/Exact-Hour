@@ -1,0 +1,22 @@
+{
+  "_comment": "Copy this to config.json and edit. config.json is gitignored. Any key you omit falls back to the defaults in config.py.",
+
+  "host": "0.0.0.0",
+  "port": 8090,
+
+  "use_llm": true,
+  "ollama_url": "http://localhost:11434",
+  "ollama_model": "llama3.2:3b",
+
+  "backends": {
+    "home": "mock",
+    "timer": "mock"
+  },
+
+  "pi_clock_url": "http://192.168.1.50:8080",
+
+  "google_assistant": {
+    "relay_url": "",
+    "user": "exacthour"
+  }
+}
