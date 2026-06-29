@@ -1,0 +1,15 @@
+# Exact Hour - PC brain dependencies.
+#
+# The brain itself is PURE PYTHON STANDARD LIBRARY (http.server, urllib, json):
+# there is nothing to pip-install to run brain_server.py with the mock backend
+# and Ollama. Listed below are only the EXTERNAL services it talks to.
+#
+#   * Ollama (the LLM fallback) - install from https://ollama.com and pull a
+#     small model once, e.g.:   ollama pull llama3.2:3b
+#     (on a 4 GB RAM PC prefer a 1B model:   ollama pull llama3.2:1b)
+#
+#   * Google Assistant backend (optional, smart-home) - needs a running
+#     assistant-relay instance (Node.js): https://github.com/greghesp/assistant-relay
+#     NOTE: archived/deprecated - see actions/google_assistant.py.
+#
+# No Python packages are required here.

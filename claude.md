@@ -156,108 +156,14 @@ main.py
 
 ---
 
-## 7. Text-First AI Command Layer (`assistant.py`)
+## 7. Text-First AI Command Layer (`assistant.py`) - DEFERRED TO RELEASE 2
 
-### What it is
-
-`assistant.py` is the **text-only prototype** of the README's "Voice-Triggered
-Local AI" module (README §4). We build it text-first (you TYPE commands) to prove
-the understand-and-act pipeline works before adding the hard parts (offline
-speech + the LED matrix). It runs offline, with no cloud, ever.
-
-### Architecture (three layers, each swappable without touching the others)
-
-```
-text input  →  parse()  →  Session  →  reply
- (today: input())          (timer model)   (today: print())
- (future: mic + wake word)                 (future: LED render() from main.py)
-```
-
-**`Session`** — timer state machine using the SAME state names as `ExactHour` in
-`main.py` (`IDLE / RUNNING / PAUSED / FINISHED`) so the two merge trivially later.
-`elapsed()` / `remaining()` are computed on demand from a `time.monotonic()`
-anchor (drift-free, no background loop). Methods: `start()`, `pause()`,
-`resume()`, `add_minutes()`, `stop()`, `elapsed()`, `remaining()`, `is_finished()`.
-
-**The "brain" is a HYBRID** — most efficient, and deliberately leaves RAM free for
-the future voice trigger:
-
-1. **`rule_parse()`** — fast, offline, **zero extra RAM**. Extracts the first
-   number, keyword-matches the action (flexible phrasing). The *primary* path.
-2. **`LlmParser` (SmolLM2-135M)** — a tiny local LLM used **only as a fallback**
-   when the rules return `unknown`. **Lazy-loaded**: if the rules always
-   understand you, the model is never loaded and uses no RAM. Enabled with
-   `--llm`; needs `llama-cpp-python` + the model file (i.e. on the Pi).
-
-`parse(text, llm)` tries the rules first and consults the LLM only on a miss.
-
-| Intent | Rule trigger keywords |
-|--------|-----------------------|
-| start (+ set goal) | `start`, `begin`, `go`, `make`, `set`, `run`, bare `N min` |
-| stop  | `stop`, `end`, `finish`, `done`, `reset`, `cancel` |
-| pause | `pause`, `hold`, `wait`, `freeze` |
-| resume| `resume`, `continue`, `unpause`, `keep going` |
-| status| `how long`, `how much`, `how am i`, `worked`, `left`, `remaining` |
-| add   | `add`, `more`, `extend`, `plus`, `another` (+ number) |
-| help / quit | `help`, `commands` / `exit`, `quit` |
-
-Unrecognised input → friendly fallback, never a crash.
-
-### The local AI model (committed with the repo)
-
-- **Model:** `models/SmolLM2-135M-Instruct-Q4_0.gguf` (~92 MB), from
-  [bartowski/SmolLM2-135M-Instruct-GGUF](https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF).
-- **Why this one:** 135M is about the smallest *usable* instruct model; Q4_0 keeps
-  it **under GitHub's 100 MB per-file limit** (so it commits in one normal `git
-  push`, no Git LFS) and llama.cpp auto-repacks Q4_0 for the Pi's ARM cores.
-- **Why not Ollama:** Ollama needs 4–8 GB RAM and will not run on 512 MB. We use
-  `llama-cpp-python` (the llama.cpp Python binding) directly instead.
-
-### RAM budget on the Pi Zero 2 W (512 MB) — leaving room for voice
-
-| Consumer | Approx RAM |
-|----------|-----------|
-| Raspberry Pi OS Lite (headless) | ~100 MB |
-| **Reserved for future wake-word listener** | ~80–120 MB |
-| SmolLM2-135M Q4_0, `n_ctx=256`, mmap'd | ~150 MB *(only while a command is being understood)* |
-| Timer app + Python | ~40 MB |
-
-The hybrid + lazy-load design means the LLM is loaded only on a rule miss, and
-wake-word detection and LLM inference run **sequentially** (you say the wake word,
-*then* the command), so their peaks don't overlap. A 1 GB swap file
-(`setup_ai_pi.sh`) absorbs any spikes.
-
-### How to run
-
-```bash
-py assistant.py --selftest   # canned transcript, rule-based, no model needed (PC)
-py assistant.py              # interactive, rule-based only (PC)
-python assistant.py --llm    # interactive, with SmolLM2 fallback (on the Pi)
-```
-
-### Files added for this module
-
-- `assistant.py` — the assistant (Session + hybrid parser + REPL + self-test).
-- `models/SmolLM2-135M-Instruct-Q4_0.gguf` — the committed local AI model (~92 MB).
-- `requirements.txt` — `llama-cpp-python` (rule-based path needs nothing).
-- `setup_ai_pi.sh` — Pi-side setup: 1 GB swap + `llama-cpp-python` install.
-
-### Future swap-in path
-
-- **Speech in:** replace `input()` with an offline STT/wake-word engine (e.g.
-  openWakeWord or Vosk) — it produces the same string `parse()` already eats.
-- **Display out:** replace `print()` with `render()` from `main.py`.
-- **Merge:** fold `Session` into `ExactHour` so buttons + voice share one timer.
-
-### Status
-
-- [x] `assistant.py` written; rule-based pipeline verified on PC (`--selftest`).
-- [x] SmolLM2-135M Q4_0 model committed under `models/`.
-- [x] `requirements.txt` + `setup_ai_pi.sh` for the Pi.
-- [ ] Validate the `--llm` fallback on real Pi Zero 2 W hardware (latency/RAM).
-- [ ] Add the offline wake-word + speech layer (voice stage).
-
-
+The text/voice AI assistant is **not part of Release 1** (clock + phone app).
+Its files (`assistant.py`, the SmolLM2 model under `models/`, and `setup_ai_pi.sh`)
+were removed from the main branch to keep the repo lean, and are preserved on the
+**`release-2-ai`** branch. The original design notes (hybrid rule + SmolLM2 parser,
+RAM budget, swap-in path) live in that branch's copy of this file. See `## 6.
+Future Work` for the product vision this layer fulfils.
 ---
 
 ## 8. Local-Network Remote Control + Android App
@@ -330,3 +236,64 @@ rule as the buttons. Status JSON:
       produce an APK — builds in Android Studio).
 - [ ] Run `main.py` on the real Pi and confirm the phone controls it over Wi-Fi.
 - [ ] Build/install the APK from Android Studio and test against the live clock.
+
+---
+
+## 9. Voice Assistant Layer (`voice/` on the Pi + `pc_brain/` on the PC)
+
+### What it is
+
+A voice front-end whose **first feature is home automation** ("turn on the
+light"), expandable later. Design split (per the user): the **Pi does
+speech-to-text only — no AI**; the **AI/intent lives on the main PC** (Ollama);
+**actions go through a swappable backend** (Google Assistant "for now").
+
+```
+[Pi] mic --Vosk STT--> text  --POST /command-->  [PC] brain_server
+        ^ double-press START                        router (rules first,
+                                                     Ollama fallback) -> backend
+                                       home -> mock | google_assistant
+                                       timer-> mock | exact_hour (reuses the clock API)
+```
+
+### Trigger (no new hardware)
+
+The middle **START** button: single press = start/pause/resume/reset (unchanged);
+**double press = talk to the AI**, in ANY state. Implemented in
+`ExactHour.handle_start_button()` — a single tap is deferred up to
+`DOUBLE_PRESS_WINDOW` (~0.40 s) so a 2nd tap can be read as a double-press.
+`ENABLE_VOICE=True` by default, but voice is only *active* if the listener
+actually starts (mic + model present); if not, `self.listener` stays `None`, the
+buffering is skipped, and START acts instantly — identical to the plain clock.
+
+### Files
+
+- **`voice/`** (Pi, optional/guarded like `rc`): `listener.py` (`VoiceListener` —
+  daemon thread; `request_listen()` sets an Event; records → Vosk →
+  `post_command()` POSTs to the brain). vosk/sounddevice imported lazily so
+  `import voice` works without them. `setup_voice.sh` downloads the ~50 MB
+  `vosk-model-small-en-us-0.15` into the gitignored `voice/models/`.
+- **`main.py`** — CHANGED additively + guarded: `try: import voice`; config knobs
+  `ENABLE_VOICE`/`BRAIN_URL`/`VOICE_MODEL_PATH`/`DOUBLE_PRESS_WINDOW`; listener
+  built/started in `main()`; `handle_start_button()` replaces the raw
+  `btn_start.tapped()` call in `run()`.
+- **`pc_brain/`** (PC, **stdlib-only**, no pip deps): `router.py` (rule fast-path
+  ported from the `release-2-ai` `assistant.py` + home-device rules; `Intent` has
+  a `domain`), `ollama_client.py` (LLM fallback via `/api/chat`, `format:json`,
+  only on unsure commands), `brain.py` (route → dispatch), `brain_server.py`
+  (`POST /command`), `actions/{base,mock,exact_hour,google_assistant}.py`,
+  `config.py` + `config.example.json` (→ gitignored `config.json`).
+
+### Status
+
+- [x] M1 PC brain + router + mock backend; **`dev/test_voice_router.py` 24/24**,
+      live HTTP smoke OK. `dev/test_voice_listener.py` (Pi→brain contract) **5/5**.
+- [x] M2 `voice/listener.py` + `main.py` double-press trigger written; `py_compile`
+      clean; `import voice` works with no deps. `ENABLE_VOICE` now defaults **True**
+      (degrades to plain clock if mic/model absent). (Mic/Vosk untested — needs the Pi.)
+- [x] M4 `exact_hour` backend done; **`dev/test_voice_actions.py` 8/8** against the
+      real `remote_control` server + `FakeTimer`. Switch `backends.timer` to use it.
+- [ ] On the Pi: add USB mic, run `setup_voice.sh`, set `BRAIN_URL`, confirm
+      double-press → speech → PC action, and the timer never stalls during STT.
+- [ ] M3 Google Assistant backend (assistant-relay; archived/deprecated, ~Mar 2026)
+      written + swappable, but untested end-to-end (needs a live relay + Google Home).

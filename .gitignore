@@ -6,3 +6,10 @@ __pycache__/
 # Virtual environments
 venv/
 .venv/
+
+# PC brain - local config (copy from config.example.json)
+pc_brain/config.json
+
+# Voice - downloaded STT models are large and not committed
+voice/models/
+

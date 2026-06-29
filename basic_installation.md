@@ -22,7 +22,16 @@ This guide assumes no prior Raspberry Pi experience. Follow it top to bottom.
 10. [Start Automatically on Boot (Optional)](#10-start-automatically-on-boot-optional)
 11. [Controls Reference](#11-controls-reference)
 12. [Troubleshooting](#12-troubleshooting)
-13. [Text AI Assistant (Optional)](#13-text-ai-assistant-optional)
+
+**Voice Assistant:**
+
+13. [Voice Assistant Overview](#13-voice-assistant-overview)
+14. [Set Up the PC Brain (Your Computer)](#14-set-up-the-pc-brain-your-computer)
+15. [Set Up the Pi Voice Front-End](#15-set-up-the-pi-voice-front-end)
+16. [Control the Timer by Voice](#16-control-the-timer-by-voice)
+17. [Connect Google Assistant for Smart Home](#17-connect-google-assistant-for-smart-home)
+18. [Run the Brain Automatically (Optional)](#18-run-the-brain-automatically-optional)
+19. [Voice Troubleshooting](#19-voice-troubleshooting)
 
 ---
 
@@ -120,22 +129,31 @@ project's packages). This is the recommended, hassle-free approach on current
 Raspberry Pi OS.
 
 ```bash
-# Create a project folder and a virtual environment inside it
-mkdir -p ~/exacthour
-cd ~/exacthour
-python3 -m venv venv
+# Get the project. `git clone` creates a folder named after the repo
+# (e.g. Exact-Hour). Do NOT `mkdir` one yourself first and clone into it -
+# that leaves you with a confusing nested folder (Exact-Hour/Exact-Hour).
+cd ~
+git clone <your-repo-url>
+cd Exact-Hour                 # use the folder name git just made (run `ls` to confirm)
 
-# Activate the virtual environment
+# Create and activate a virtual environment INSIDE the project folder
+python3 -m venv venv
 source venv/bin/activate
 
 # Install the libraries the script needs
-pip install luma.led_matrix gpiozero lgpio
+pip install luma.led_matrix gpiozero lgpio spidev
 ```
+
+> **No `git`, or copying the files some other way?** Skip the `git clone` above,
+> get the code onto the Pi using [Section 8](#8-get-the-code), then `cd` into the
+> project folder and run the `venv` + `pip install` steps.
 
 > **What each package does**
 > - `luma.led_matrix` — drives the MAX7219 over SPI (also pulls in `luma.core` + Pillow).
 > - `gpiozero` — simple, debounced reading of the push buttons.
 > - `lgpio` — the GPIO backend `gpiozero` uses on Raspberry Pi OS (Bookworm).
+> - `spidev` — the SPI backend luma uses to reach the MAX7219. Without it the app
+>   crashes at startup with `ModuleNotFoundError: No module named 'spidev'`.
 
 You'll know the environment is active when your prompt starts with `(venv)`.
 To leave it later, run `deactivate`.
@@ -146,7 +164,7 @@ To leave it later, run `deactivate`.
 If you prefer not to use a virtual environment, you can install with:
 
 ```bash
-sudo pip3 install luma.led_matrix gpiozero lgpio --break-system-packages
+sudo pip3 install luma.led_matrix gpiozero lgpio spidev --break-system-packages
 ```
 
 The `--break-system-packages` flag is required because newer Raspberry Pi OS
@@ -210,21 +228,22 @@ No resistors are needed — the script turns on the Pi's internal pull-ups.
 
 ## 8. Get the Code
 
-Put `main.py` into your project folder (`~/exacthour`).
+**If you used `git clone` in [Section 6](#6-install-the-python-libraries), you
+already have everything** (`main.py`, `remote_control.py`, `web_remote.html`,
+and the optional `voice/` + `pc_brain/` folders, …) — skip ahead to
+[Section 9](#9-run-it).
 
-**If the project is on GitHub:**
-
-```bash
-cd ~/exacthour
-git clone <your-repo-url> repo
-cp repo/main.py ~/exacthour/main.py
-```
-
-**Or copy it from your computer with `scp`:**
+**Not using git? Copy the whole project folder from your computer with `scp`.**
+Run this *on your computer* (not the Pi), from the directory that contains the
+project folder:
 
 ```bash
-scp main.py pi@exacthour.local:~/exacthour/main.py
+scp -r Exact-Hour pi@exacthour.local:~/
 ```
+
+> ⚠️ Copy the **entire folder**, not just `main.py`. The clock needs its
+> companion files — e.g. without `remote_control.py` the phone/Wi-Fi control is
+> silently skipped and port 8080 never opens.
 
 ---
 
@@ -233,7 +252,7 @@ scp main.py pi@exacthour.local:~/exacthour/main.py
 Make sure the virtual environment is active, then run the script:
 
 ```bash
-cd ~/exacthour
+cd ~/Exact-Hour              # the folder git clone created
 source venv/bin/activate     # if not already active
 python main.py
 ```
@@ -312,11 +331,16 @@ To make Exact Hour launch every time the Pi powers on, create a **systemd servic
 | **START** | Tap (when running) | Pause |
 | **START** | Tap (when paused) | Resume |
 | **START** | Tap (when finished) | Reset to 5:00 |
+| **START** | **Double-tap** (any state) | **Talk to the AI** (see [Part II](#13-voice-assistant-overview)) |
 
 Notes:
 - Time can only be changed while **idle or paused** — it's locked while running.
 - The display **never goes fully dark**; it dims to signal idle/paused states.
 - At zero, it shows **`BITTI`** ("finished" in Turkish), blinking until you reset.
+- **Double-tap** needs the voice assistant set up (a microphone + the PC brain
+  from Part II) to actually do anything. While the listener is active, a single
+  tap is held back by a fraction of a second so it can be told apart from a
+  double-tap; if voice isn't active, a single tap is instant as above.
 
 ---
 
@@ -337,6 +361,12 @@ SPI isn't enabled. Re-do [Section 4](#4-enable-spi) and reboot.
 The virtual environment isn't active, or the libraries aren't installed.
 Run `source venv/bin/activate` then re-do [Section 6](#6-install-the-python-libraries).
 
+**`ModuleNotFoundError: No module named 'spidev'`**
+The SPI backend isn't installed in your environment. With the venv active, run:
+```bash
+pip install spidev
+```
+
 **`gpiozero` error about a pin factory / GPIO not available**
 Make sure `lgpio` is installed in the same environment:
 ```bash
@@ -354,113 +384,433 @@ pip install lgpio
 - Verify `CASCADED_DEVICES = 4` matches your number of 8×8 blocks.
 
 ---
+---
 
-## 13. Text AI Assistant (Optional)
+# Part II — Voice Assistant
 
-`assistant.py` lets you **type** commands in plain English instead of pressing
-buttons — "make 20 min", "how long have I worked", "add 15 minutes", "stop".
-It's the text-first version of the planned voice feature.
+Part I gives you the working clock. This second part adds the device's other
+half — a **voice assistant** you talk to by double-pressing the START button.
+Its first job is **home automation** ("turn on the light"), and it grows from
+there.
 
-There are **two levels**. Start with Level 1 — it needs no setup at all.
+Set the sections up **in order** — each step is independently testable, so you
+can verify the whole chain with *no* microphone and *no* smart devices first,
+then wire the real hardware in. (If you ever want a deliberately voice-free
+build, set `ENABLE_VOICE = False` in `main.py` and skip this part.)
 
-### Level 1 — Just type commands (no install, works anywhere)
+---
 
-This works on the **Pi or your own PC**, with nothing extra to install.
+## 13. Voice Assistant Overview
 
-1. Make sure you have the code (the same `assistant.py` and `models/` folder that
-   came with the project — see [Section 8](#8-get-the-code)).
-2. Run it:
+### How it works (and what runs where)
 
-   ```bash
-   python assistant.py
-   ```
+Speech recognition is cheap to run but the "understanding" is not, so the work
+is split across **two machines**:
 
-   > On Windows, type `py assistant.py` instead of `python assistant.py`.
-
-3. Type commands and press Enter. Try these:
-
-   ```
-   make 20 min
-   how long have i worked
-   add 15 minutes
-   pause
-   resume
-   stop
-   help
-   exit
-   ```
-
-That's it — if you see replies like *"Session started…"*, it works. 🎉
-
-**Want a quick demo without typing?** Run:
-
-```bash
-python assistant.py --selftest
+```
+[ Raspberry Pi ]                         [ Your PC ]
+  microphone                               brain_server.py
+     │ you double-press START                 │
+     ▼                                         ▼
+  Vosk speech-to-text  ──recognized text──>  router  (keyword rules first,
+  (offline, on the Pi)     over Wi-Fi          │       Ollama AI only if unsure)
+     no AI here                                ▼
+                                          action backend
+                                   ┌──────────┼─────────────┐
+                                   ▼          ▼             ▼
+                                 mock     the clock     Google Assistant
+                               (prints)   (this Pi)     (your smart home)
 ```
 
-It runs a list of example commands by itself and shows the answers.
+- **The Pi is just ears.** It records one short command, turns it into **text**
+  with Vosk (free, offline, no account), and sends *only that text* to your PC.
+- **Your PC is the brain.** A tiny keyword router handles obvious commands
+  instantly; anything unclear is passed to a small local model in **Ollama**.
+- **The "backend" is the hands** — and it's swappable. Start with `mock` (just
+  prints what it *would* do), then point it at the clock and/or Google Assistant.
 
-### Level 2 — Turn on the local AI brain (Pi only)
+### Which machine does each section
 
-Level 1 understands the common commands with simple rules. Level 2 adds a **tiny
-offline AI model** (SmolLM2) so it also understands more unusual phrasings. The
-AI runs **fully on the Pi — no internet, no cloud**.
+| Section | Runs on | Needs |
+|---------|---------|-------|
+| 14 — PC brain | **Your PC** | Python, optionally Ollama |
+| 15 — Pi voice front-end | **The Pi** | A USB microphone |
+| 16 — Timer by voice | config on the PC | the clock from Part I |
+| 17 — Google Assistant | config on the PC | a Google Home setup + a relay |
 
-> ⚠️ Do this **on the Raspberry Pi**, not your PC. It needs the Pi to compile.
+**Do them in order.** Get Section 14 working with the `mock` backend first — it
+proves the whole chain end-to-end before you touch a microphone or any accounts.
 
-1. Activate your virtual environment (the one from
-   [Section 6](#6-install-the-python-libraries)):
+### A note on privacy
 
-   ```bash
-   cd ~/exacthour
-   source venv/bin/activate
+Speech-to-text happens **offline on the Pi**. The only thing that leaves the Pi
+is the recognized **text**, and only to **your own PC on your home Wi-Fi**. The
+keyword rules and the Ollama model are local too. The *one* exception is the
+optional Google Assistant backend in [Section 17](#17-connect-google-assistant-for-smart-home),
+which (by design) sends the command on to Google so it can control your devices.
+
+---
+
+## 14. Set Up the PC Brain (Your Computer)
+
+> All commands in this section run **on your PC**, not the Pi. (Windows is
+> assumed here; on macOS/Linux use `python3` where it says `py` and `cp` where it
+> says `copy`.)
+
+### 14.1 Install Ollama and pull a small model
+
+The AI fallback uses [**Ollama**](https://ollama.com) — a free app that runs
+language models locally.
+
+1. Download and install Ollama for your OS from <https://ollama.com>.
+2. Pull a small model (open a terminal / PowerShell):
+
+   ```powershell
+   ollama pull llama3.2:3b
    ```
 
-2. Run the one-time setup script (adds extra memory + installs the AI library —
-   this can take **10–20 minutes** on a Pi Zero, so be patient):
+   > **On an older PC with ~4 GB RAM**, use the 1B model instead — it fits and is
+   > faster, just a little less clever:
+   > ```powershell
+   > ollama pull llama3.2:1b
+   > ```
+   > Then set `"ollama_model": "llama3.2:1b"` in `config.json` (next step).
 
-   ```bash
-   bash setup_ai_pi.sh
-   ```
+> **Ollama is optional.** Clear commands ("turn on the light", "set 20 minutes")
+> are handled by the keyword rules and never touch Ollama. If you don't install
+> it, set `"use_llm": false` in `config.json` and the assistant runs on rules
+> alone.
 
-3. Now run the assistant **with the AI turned on**:
+### 14.2 Get the project onto your PC
 
-   ```bash
-   python assistant.py --llm
-   ```
+If this repo is already on your PC, you're done. Otherwise `git clone` it (the
+PC needs the `pc_brain/` folder; it does **not** need the luma/gpiozero libraries
+— the brain is pure standard-library Python).
 
-   You'll see *"Local AI ready"* if it worked. Type commands the same as before —
-   now it can handle phrasings the simple rules would miss.
+### 14.3 Configure
 
-### Show the timer on the real LED matrix
+Copy the example config and (optionally) edit it. Defaults are fine for the first
+mock test.
 
-By default the assistant only **prints** replies in the terminal. To make your
-typed commands actually drive the **MAX7219 LED display** (the same one `main.py`
-uses), add `--display`:
-
-```bash
-python assistant.py --display          # rules only, on the LED
-python assistant.py --llm --display     # local AI + the LED
+```powershell
+cd <your-project-folder>
+copy pc_brain\config.example.json pc_brain\config.json
 ```
 
-Now `make 20 min` shows `20:00` counting down on the matrix, `pause` freezes it,
-`stop` clears it, and reaching the goal shows `BITTI` — all live while you type.
+Open `pc_brain\config.json` in any editor. For the first test, leave the
+backends on `"mock"`:
 
-> The display needs the matrix wired up (Section 7) and runs on the Pi. Make sure
-> `main.py` isn't running at the same time — only one program can use the display.
-> `--display` only needs `luma.led_matrix` (no `gpiozero`/`lgpio`), so if you only
-> want the screen working, `pip install luma.led_matrix` is enough.
+```json
+{
+  "port": 8090,
+  "use_llm": true,
+  "ollama_model": "llama3.2:3b",
+  "backends": { "home": "mock", "timer": "mock" }
+}
+```
 
-> The AI model file (`models/SmolLM2-135M-Instruct-Q4_0.gguf`, ~92 MB) already
-> comes with the project, so there is nothing to download.
+(`config.json` is gitignored, so your local settings won't be committed.)
 
-### Troubleshooting the assistant
+### 14.4 Start the brain
 
-**`python: command not found`** → try `python3 assistant.py` (Pi) or `py assistant.py` (Windows).
+```powershell
+py pc_brain\brain_server.py
+```
 
-**"Local AI unavailable…"** when using `--llm` → that's okay, it just falls back to
-the simple rules and still works. To enable the AI, finish Level 2 above
-(`bash setup_ai_pi.sh`).
+You should see:
 
-**It feels slow with `--llm`** → the AI only runs when the simple rules are unsure,
-and the Pi Zero is a small computer. For fastest use, run without `--llm`.
+```
+Exact Hour brain listening on http://0.0.0.0:8090/command
+  backends: {'home': 'mock', 'timer': 'mock'}   llm: llama3.2:3b
+```
+
+Leave this window open — it prints what it hears and does.
+
+### 14.5 Test it with the mock backend (no Pi, no mic)
+
+In a **second** terminal on the same PC, send a command by hand:
+
+```powershell
+curl -X POST http://localhost:8090/command -H "Content-Type: application/json" -d "{\"text\":\"turn on the living room light\"}"
+```
+
+The brain window prints something like:
+
+```
+  heard: 'turn on the living room light'
+   -> {'domain': 'home', 'action': 'on', ... }
+   -> [MOCK] would turn ON : living room light
+```
+
+Try a few: `"set 20 minutes"`, `"pause"`, `"lights out"`. When this works, the
+understanding half is proven. 🎉
+
+### 14.6 Let the Pi reach your PC (firewall)
+
+The Pi will POST to your PC's LAN address on port **8090**.
+
+1. Find your PC's IP address:
+
+   ```powershell
+   ipconfig          # look for "IPv4 Address", e.g. 192.168.1.20
+   ```
+
+2. **Allow port 8090 through Windows Firewall** (run PowerShell *as
+   Administrator*), or just click **Allow** if Windows prompts you the first time
+   the brain starts:
+
+   ```powershell
+   New-NetFirewallRule -DisplayName "Exact Hour brain" -Direction Inbound -Protocol TCP -LocalPort 8090 -Action Allow
+   ```
+
+You'll use `http://<that-IP>:8090` as the Pi's `BRAIN_URL` in the next section.
+
+---
+
+## 15. Set Up the Pi Voice Front-End
+
+> These commands run **on the Pi**.
+
+### 15.1 Add a microphone
+
+The Pi Zero 2 W has **no microphone input**, so add a **USB microphone**. The
+Pi Zero's data USB port is a **micro-USB** socket, so you'll need a
+**micro-USB (male) → USB-A (female) OTG adapter** to plug a normal USB mic in.
+
+Plug it in, then confirm the Pi sees it:
+
+```bash
+arecord -l        # should list a "USB Audio" capture device
+```
+
+### 15.2 Install the voice dependencies and model
+
+Activate the same virtual environment you made in [Section 6](#6-install-the-python-libraries),
+then run the setup script from the project root. It installs the audio system
+library, the Python packages (`vosk`, `sounddevice`), and downloads the small
+offline English model (~50 MB) into `voice/models/`:
+
+```bash
+cd ~/Exact-Hour
+source venv/bin/activate
+bash voice/setup_voice.sh
+```
+
+> The model folder is **not** committed to git (it's large) — the script
+> downloads it. For another language, pick a *small* model from
+> <https://alphacephei.com/vosk/models> and set its path in `VOICE_MODEL_PATH`
+> (next step).
+
+### 15.3 Point the Pi at your PC in `main.py`
+
+Voice is **on by default** (`ENABLE_VOICE = True`). The one thing you must set is
+your PC's address, in the config block near the top of `main.py`:
+
+```python
+ENABLE_VOICE = True                          # already the default
+BRAIN_URL    = "http://192.168.1.20:8090"    # <-- your PC's IP from Section 14.6
+# VOICE_MODEL_PATH and DOUBLE_PRESS_WINDOW can stay at their defaults
+```
+
+- `DOUBLE_PRESS_WINDOW` (default `0.40` seconds) is how quickly you must press
+  START twice for it to count as "talk to the AI". Increase it if double-presses
+  are missed; decrease it if single presses feel laggy.
+
+### 15.4 Run and try it
+
+Make sure the **PC brain from Section 14 is running**, then start the clock:
+
+```bash
+python main.py
+```
+
+You should see `[voice] ready - double-press START to speak`. Now:
+
+1. **Double-press the START button.** The Pi prints `[voice] listening...`.
+2. Say a command, e.g. **"turn on the light"**.
+3. Watch the **PC brain window** print the recognized text and the
+   `[MOCK] would turn ON ...` line.
+
+While it's listening and recognizing, the **countdown keeps ticking** — speech
+runs on a background thread so the clock never freezes. A **single** START press
+still starts/pauses the timer exactly as before.
+
+> If voice can't start (missing model or mic), `main.py` simply prints why and
+> runs as a normal clock — it never refuses to boot.
+
+---
+
+## 16. Control the Timer by Voice
+
+Right now timer commands only print (mock). To make them drive the **real
+clock**, switch the timer backend to `exact_hour` and tell it the clock's
+address. Edit `pc_brain/config.json` **on your PC**:
+
+```json
+{
+  "backends": { "home": "mock", "timer": "exact_hour" },
+  "pi_clock_url": "http://192.168.1.50:8080"
+}
+```
+
+- Use the **Pi's** IP for `pi_clock_url` (the clock serves its control API on
+  port **8080** — the same one the phone app uses). Find it with `hostname -I`
+  on the Pi.
+- The clock must have `ENABLE_REMOTE = True` in `main.py` (it is by default).
+
+Restart the brain (`Ctrl+C`, then `py pc_brain\brain_server.py`). Now, after a
+double-press, these all work by voice:
+
+| You say | It does |
+|---------|---------|
+| "set twenty five minutes" | sets the countdown to 25:00 |
+| "give me ten more minutes" | adds 10 minutes |
+| "pause" / "resume" | pause / resume |
+| "how long is left" | reports the current time |
+| "stop" / "reset" | resets the timer |
+
+---
+
+## 17. Connect Google Assistant for Smart Home
+
+This is what makes **"turn on the light"** actually switch a real bulb, by
+handing the command to **Google Assistant**, which controls whatever you've
+already linked in the **Google Home** app.
+
+> ### ⚠️ Read this first — this path has an expiry date
+> The bridge this uses (**assistant-relay**) was **archived in April 2025** and
+> relies on the **deprecated** Google Assistant SDK; **Google Assistant itself is
+> being retired around March 2026** (replaced by Gemini). It works *for now*, but
+> it **will** stop working. That's exactly why the assistant is built so the
+> backend is **one swappable file**: when this breaks, you replace
+> `pc_brain/actions/google_assistant.py` with, say, a **Home Assistant** or
+> direct-bulb backend, and the Pi + brain stay untouched. Until then, this is the
+> quickest "for now" option.
+
+### What you need
+
+- Your smart devices already added to the **Google Home** app (and working when
+  you ask the Google app/speaker normally).
+- A machine on your network to run **assistant-relay** (it needs **Node.js**).
+  Your PC is fine.
+- A free **Google Cloud** project with **OAuth (device) credentials** — the
+  relay's setup walks you through this.
+
+### Steps
+
+1. Install **Node.js** (<https://nodejs.org>), then install and start
+   **assistant-relay** by following its guide:
+   <https://greghesp.github.io/assistant-relay/>. During setup you will:
+   - create a Google Cloud project and download OAuth client credentials,
+   - register a **user** name in the relay,
+   - leave the relay running (it listens on a port, by default `3000`).
+2. Note the relay's address (e.g. `http://192.168.1.20:3000`) and the user name.
+3. Wire it into `pc_brain/config.json` **on your PC** and switch the `home`
+   backend over:
+
+   ```json
+   {
+     "backends": { "home": "google_assistant", "timer": "exact_hour" },
+     "google_assistant": {
+       "relay_url": "http://192.168.1.20:3000",
+       "user": "yourname"
+     }
+   }
+   ```
+
+4. Restart the brain. Double-press START and say **"turn on the light"** — the
+   linked device should switch. The brain echoes
+   `Sent to Google Assistant: 'turn on the light'`.
+
+> If the `home` backend is left on `google_assistant` but `relay_url` is blank,
+> the assistant politely replies that it isn't configured (instead of erroring) —
+> so you can always fall back to `"home": "mock"` while you sort the relay out.
+
+---
+
+## 18. Run the Brain Automatically (Optional)
+
+So you don't have to start `brain_server.py` by hand every time:
+
+### On Windows (your PC)
+
+**Simplest — run at login.** Create a file `start-brain.bat` with:
+
+```bat
+@echo off
+cd /d "C:\path\to\your\Exact-Hour"
+py pc_brain\brain_server.py
+```
+
+Press `Win + R`, type `shell:startup`, Enter, and drop a **shortcut to that
+`.bat`** into the folder that opens. It now launches when you log in. (For a
+hidden, no-window service, use **Task Scheduler** → "Create Task" → trigger
+"At log on" → action: your `.bat`, and tick "Run whether user is logged on or
+not".)
+
+> Make sure **Ollama** is also set to start on boot (its installer usually does
+> this) so the AI fallback is available.
+
+### On a Linux/macOS PC
+
+Use a `systemd` user service (like [Section 10](#10-start-automatically-on-boot-optional))
+or a `launchd` agent that runs `python3 pc_brain/brain_server.py`.
+
+The **Pi** side (the clock + voice listener) auto-starts via the `systemd`
+service you set up in [Section 10](#10-start-automatically-on-boot-optional) —
+just make sure that was created *after* you set `ENABLE_VOICE = True`.
+
+---
+
+## 19. Voice Troubleshooting
+
+**`[voice] disabled - missing dependency` on the Pi**
+The venv isn't active or the packages aren't installed. Run
+`source venv/bin/activate` then `pip install vosk sounddevice` (or re-run
+`bash voice/setup_voice.sh`).
+
+**`[voice] disabled - Vosk model not found`**
+The model didn't download. Re-run `bash voice/setup_voice.sh`, or check that
+`VOICE_MODEL_PATH` in `main.py` points at the unzipped model folder under
+`voice/models/`.
+
+**`arecord -l` shows no capture device / it hears nothing**
+- Confirm the USB mic is seated in the **OTG adapter** and the Pi's **data** USB
+  port (not the power-only port).
+- List input devices Python can see:
+  ```bash
+  python3 -c "import sounddevice; print(sounddevice.query_devices())"
+  ```
+  Each device has an index. If the USB mic isn't the default input, make it the
+  default ALSA capture device with a small `~/.asoundrc`, or note its index and
+  test it directly:
+  ```bash
+  arecord -D plughw:1,0 -d 3 test.wav && aplay test.wav   # 1 = the USB card number from `arecord -l`
+  ```
+
+**The Pi reaches the brain but gets `{"ok": false, "error": ...}`**
+- Check `BRAIN_URL` in `main.py` matches your **PC's** current IP (`ipconfig`).
+- Make sure the **brain is running** and **port 8090 is allowed** through the
+  PC's firewall ([Section 14.6](#14-set-up-the-pc-brain-your-computer)).
+- Confirm both devices are on the **same Wi-Fi/LAN**.
+
+**Ollama is slow, errors, or the PC runs out of memory**
+- Use the **1B** model (`ollama pull llama3.2:1b`, set `"ollama_model"`).
+- Ensure Ollama is running (`ollama list` should respond).
+- Or set `"use_llm": false` to run on the keyword rules alone (no AI needed).
+
+**Double-press isn't detected (or single presses feel laggy)**
+Tune `DOUBLE_PRESS_WINDOW` in `main.py`: **larger** = easier double-presses but
+laggier single presses; **smaller** = snappier single presses but you must tap
+faster.
+
+**It mishears words**
+The small Vosk model trades accuracy for size. Speak clearly and keep commands
+short ("lights off", "set twenty minutes"). The rules + Ollama still try to make
+sense of near-misses; for better accuracy you can swap in a larger Vosk model on
+a beefier Pi.
+
+**"Smart home isn't configured" reply**
+The `home` backend is `google_assistant` but `relay_url` is empty. Fill it in
+([Section 17](#17-connect-google-assistant-for-smart-home)) or set
+`"home": "mock"` to go back to printing.

@@ -42,6 +42,15 @@ try:
 except ImportError:
     rc = None
 
+# Optional voice front-end (microphone + Vosk speech-to-text on the Pi). Guarded
+# exactly like rc: if the `voice` package or its deps (vosk/sounddevice) are
+# absent, main.py still runs as a plain timer. Recognized speech is POSTed to
+# the PC "brain" (pc_brain/), which does the AI + action - no AI runs here.
+try:
+    import voice as voicemod
+except ImportError:
+    voicemod = None
+
 
 # =============================================================================
 #  CONFIGURATION  (all the "knobs" live here - mirrors the beta's #defines)
@@ -99,6 +108,15 @@ FADE_STEP_S = 0.04         # time per step of the boot / BITTI fade-in
 ENABLE_REMOTE = True       # serve the HTTP control API on the local Wi-Fi network
 REMOTE_HOST   = "0.0.0.0"  # 0.0.0.0 = listen on every interface (so the phone can reach it)
 REMOTE_PORT   = 8080       # the app connects to http://<this-pi-ip>:8080
+
+# ----- Voice assistant (mic + Vosk STT here, AI on the PC brain) --------------
+# A built-in feature. It only becomes ACTIVE when a USB mic + the Vosk model are
+# present and the listener starts; otherwise it logs one line and the clock runs
+# exactly as before (set this False for a deliberately voice-free build).
+ENABLE_VOICE        = True                                    # master on/off switch
+BRAIN_URL           = "http://192.168.1.20:8090"              # the PC running pc_brain/brain_server.py
+VOICE_MODEL_PATH    = "voice/models/vosk-model-small-en-us-0.15"
+DOUBLE_PRESS_WINDOW = 0.40 # s: a 2nd START tap within this window = "talk to the AI"
 
 
 # =============================================================================
@@ -299,12 +317,20 @@ class HoldButton:
 #  the Arduino beta so the two are easy to compare side by side.
 # =============================================================================
 class ExactHour:
-    def __init__(self, device, btn_up, btn_down, btn_start, control=None):
+    def __init__(self, device, btn_up, btn_down, btn_start, control=None,
+                 listener=None):
         self.device    = device
         self.btn_up    = btn_up
         self.btn_down  = btn_down
         self.btn_start = btn_start
         self.control   = control         # RemoteControl bridge, or None if disabled
+        self.listener  = listener        # VoiceListener, or None if voice disabled
+
+        # --- START double-press detection (only used when a listener exists) ---
+        # A single tap is briefly deferred so a quick second tap can be read as a
+        # "talk to the AI" double-press instead. See handle_start_button().
+        self._tap_pending    = False
+        self._tap_pending_at = 0.0
 
         # --- timer state ---
         self.state   = "IDLE"            # IDLE / RUNNING / PAUSED / FINISHED
@@ -512,6 +538,40 @@ class ExactHour:
         elif self.state == "FINISHED":
             self._reset_to_idle()
 
+    def handle_start_button(self):
+        """Process the START button each loop.
+
+        Voice OFF (no listener): a tap acts instantly on release, exactly like
+        the beta - no delay, no behaviour change.
+
+        Voice ON: a SINGLE tap still does start/pause/resume/reset, but it is
+        held back for up to DOUBLE_PRESS_WINDOW so that a DOUBLE tap (two taps
+        inside that window) can instead trigger the voice listener. The
+        double-press works in ANY state - it is read before the state machine,
+        so "press the middle button twice" always means "talk to the AI"."""
+        tapped = self.btn_start.tapped()
+
+        # No voice -> behave exactly as before (instant, no buffering).
+        if self.listener is None:
+            if tapped:
+                self.on_start_tap()
+            return
+
+        now = time.monotonic()
+        if tapped:
+            if self._tap_pending and (now - self._tap_pending_at) <= DOUBLE_PRESS_WINDOW:
+                # Second tap in time -> double-press -> talk to the AI.
+                self._tap_pending = False
+                self.listener.request_listen()
+            else:
+                # First tap -> wait briefly to see if a second tap follows.
+                self._tap_pending    = True
+                self._tap_pending_at = now
+        elif self._tap_pending and (now - self._tap_pending_at) > DOUBLE_PRESS_WINDOW:
+            # Window elapsed with only one tap -> it was a normal single press.
+            self._tap_pending = False
+            self.on_start_tap()
+
     def _reset_to_idle(self):
         """Shared reset used by START and by adjusting from the FINISHED screen."""
         self.state              = "IDLE"
@@ -653,9 +713,9 @@ class ExactHour:
                     except Exception:
                         traceback.print_exc(file=sys.stderr)
 
-                # 2) START button (acts on release, like the beta)
-                if self.btn_start.tapped():
-                    self.on_start_tap()
+                # 2) START button (single tap = start/pause/resume/reset;
+                #    double tap = talk to the AI when voice is enabled).
+                self.handle_start_button()
 
                 # 3) UP / DOWN buttons (tap + accelerating hold)
                 up_event, up_step = self.btn_up.poll()
@@ -713,8 +773,21 @@ def main():
             print("Remote control disabled (server could not start: {}).".format(exc))
             control = None
 
+    # Optionally bring up the voice front-end (mic + Vosk). If deps/model are
+    # missing or it can't start, we log and run without voice (plain timer).
+    listener = None
+    if ENABLE_VOICE and voicemod is not None:
+        try:
+            listener = voicemod.VoiceListener(BRAIN_URL, model_path=VOICE_MODEL_PATH)
+            if not listener.start():
+                listener = None         # start() already explained why
+        except Exception as exc:        # noqa: BLE001 - never block the clock
+            print("Voice disabled (could not start: {}).".format(exc))
+            listener = None
+
     # Build the timer and run it.
-    app = ExactHour(device, btn_up, btn_down, btn_start, control=control)
+    app = ExactHour(device, btn_up, btn_down, btn_start, control=control,
+                    listener=listener)
     app.run()
 
 
