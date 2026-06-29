@@ -39,6 +39,28 @@ MAX_BODY_SIZE = 64 * 1024
 
 
 # =============================================================================
+#  _QuietThreadingHTTPServer - same server, minus the harmless-disconnect noise
+# -----------------------------------------------------------------------------
+#  The Android app polls /api/status repeatedly and closes old keep-alive
+#  connections as it goes. When a client drops a socket, socketserver raises
+#  ConnectionResetError / BrokenPipeError from DEEP inside its own request loop
+#  (handle_one_request -> rfile.readline), BEFORE our do_GET/do_POST handlers
+#  run - so our per-request try/except can't catch it, and the default
+#  handle_error() prints a full traceback for every disconnect. That is pure
+#  cosmetic noise (nothing actually failed), so we swallow exactly those
+#  expected disconnect errors here and let any genuinely unexpected error
+#  through to the normal handler.
+# =============================================================================
+class _QuietThreadingHTTPServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError,
+                            ConnectionAbortedError)):
+            return                       # client hung up - expected, ignore
+        super().handle_error(request, client_address)
+
+
+# =============================================================================
 #  Command - one instruction travelling from the HTTP thread to the main loop
 # -----------------------------------------------------------------------------
 #  `done` is set by the main loop once the command has been applied, and
@@ -111,7 +133,7 @@ class RemoteControl:
         """Start the HTTP server in a daemon thread. Returns the server object."""
         control = self
         index = _load_index()        # optional built-in web remote (web_remote.html)
-        self._httpd = ThreadingHTTPServer((host, port), _make_handler(control, index))
+        self._httpd = _QuietThreadingHTTPServer((host, port), _make_handler(control, index))
         self._http_thread = threading.Thread(target=self._httpd.serve_forever,
                                              name="exact-hour-http", daemon=True)
         self._http_thread.start()
